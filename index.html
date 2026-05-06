@@ -127,7 +127,10 @@ select.inp{appearance:none;-webkit-appearance:none;background-image:url("data:im
 .sb{flex:1;height:5px;background:var(--bdL);border-radius:3px;overflow:hidden}
 .sb-f{height:100%;border-radius:3px;transition:width .3s}
 .ibox{padding:12px 15px;background:var(--peach);border-radius:10px;font-size:12px;color:var(--sub);line-height:1.8;margin-top:12px;border:2px solid var(--peachD)}
-.ic{background:var(--sf);border:2px solid var(--bdL);border-radius:12px;padding:12px 14px;margin-bottom:9px}
+.ic{background:var(--sf);border:2px solid var(--bdL);border-radius:12px;padding:12px 14px;margin-bottom:9px;transition:all .2s}
+.ic.drag-over{border-color:var(--coral);background:var(--coralL);transform:scale(1.01)}
+.ic.dragging{opacity:.4;border-style:dashed}
+.drag-handle:active{cursor:grabbing;opacity:.8}
 .ic.low{border-color:var(--amberBd);background:var(--amberBg)}
 .qg{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
 .tabs{display:flex;gap:6px;margin-bottom:14px;overflow-x:auto;padding-bottom:2px}
@@ -799,9 +802,11 @@ ${items.map(item=>{
   const barColor=low?'var(--coral)':pct>80?'var(--mint)':'var(--lemonD)';
   return`<div class="ic${low?' low':''}">
   <div style="display:flex;justify-content:space-between;align-items:flex-start">
-    <div style="display:flex;flex-direction:column;gap:3px;margin-right:8px;flex-shrink:0">
-      <button style="width:26px;height:26px;border:2px solid var(--bd);border-radius:6px;background:var(--sf);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center" data-a="invUp" data-id="${item.id}">↑</button>
-      <button style="width:26px;height:26px;border:2px solid var(--bd);border-radius:6px;background:var(--sf);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center" data-a="invDown" data-id="${item.id}">↓</button>
+    <div class="drag-handle" draggable="true" data-drag-id="${item.id}"
+      style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:28px;margin-right:8px;flex-shrink:0;cursor:grab;opacity:.4;gap:3px;padding:4px 0">
+      <div style="width:16px;height:2px;background:var(--muted);border-radius:1px"></div>
+      <div style="width:16px;height:2px;background:var(--muted);border-radius:1px"></div>
+      <div style="width:16px;height:2px;background:var(--muted);border-radius:1px"></div>
     </div>
     <div style="flex:1;min-width:0">
       <div style="display:flex;gap:5px;margin-bottom:4px;flex-wrap:wrap">
@@ -1341,8 +1346,9 @@ function sendModal(){
 <div class="modal" onclick="event.stopPropagation()">
   ${MH('✦ 寄賣',`送貨到 ${store}`,'')}
   <div class="mb">
-    <div class="f"><label>寄賣店</label><select class="inp" data-b="sendF.store">${STORES.map(s=>`<option${f.store===s?' selected':''}>${esc(s)}</option>`).join('')}</select></div>
-    <div class="f"><label>產品</label>
+    <div class="f"><label>日期 Date</label><input class="inp" type="date" value="${esc(f.date||toDay())}" data-b="sendF.date"></div>
+    <div class="f"><label>寄賣店 Store</label><select class="inp" data-b="sendF.store">${STORES.map(s=>`<option${f.store===s?' selected':''}>${esc(s)}</option>`).join('')}</select></div>
+    <div class="f"><label>產品 Product</label>
       <select class="inp" data-b="sendF.prodName"><option value="">選擇產品...</option>
         ${S.prods.map(p=>{const cost=prodCost(p);const income=consignIncome(p.price,f.store+' 寄賣');const pr=income-cost;return`<option value="${esc(p.name)}"${f.prodName===p.name?' selected':''}>${esc(p.name)} (毛利${fmt(pr)})</option>`}).join('')}
       </select>
@@ -1462,6 +1468,7 @@ function bindAll(){
   document.querySelectorAll('[data-a]').forEach(el=>{
     el.addEventListener('click',e=>{e.stopPropagation();act(el.dataset.a,el.dataset);});
   });
+  initInvDrag();
   document.querySelectorAll('[data-a="importJSON"]').forEach(el=>{
     el.addEventListener('change',()=>{if(el.files[0])importJSON(el.files[0]);});
   });
@@ -1523,7 +1530,7 @@ async function act(a,d){
   else if(a==='openManageItems'){S.modals.manage=true;re();}
   else if(a==='openStocktake'){S.modals.stocktake=true;re();}
   else if(a==='confirmStocktake'){await confirmStocktake();}
-  else if(a==='openSend'){S.modals.send=true;S.modals.sendStore=d.s||'moonstone';S.forms.sendF={store:d.s||'moonstone',prodName:'',qty:'',note:''};re();}
+  else if(a==='openSend'){S.modals.send=true;S.modals.sendStore=d.s||'moonstone';S.forms.sendF={date:toDay(),store:d.s||'moonstone',prodName:'',qty:'',note:''};re();}
   else if(a==='qkIn'){S.modals.qkStock=true;S.modals.qkData={id:d.id,type:'in'};S.forms.qkF={qty:'',unitCost:'',note:''};re();}
   else if(a==='qkOut'){S.modals.qkStock=true;S.modals.qkData={id:d.id,type:'out'};S.forms.qkF={qty:'',unitCost:'',note:''};re();}
   else if(a==='askDel'){S.confirms[d.k]=true;re();}
@@ -1824,6 +1831,84 @@ async function invMove(id,dir){
   if(ni<0||ni>=S.invItems.length)return;
   [S.invItems[idx],S.invItems[ni]]=[S.invItems[ni],S.invItems[idx]];
   await saveA('inv_items',S.invItems);re();
+}
+
+// ── Drag and Drop for Inventory ──────────────
+let _dragId=null;
+function initInvDrag(){
+  document.querySelectorAll('.drag-handle').forEach(handle=>{
+    const card=handle.closest('.ic');
+    if(!card)return;
+    const id=handle.dataset.dragId;
+    handle.addEventListener('dragstart',e=>{
+      _dragId=id;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed='move';
+    });
+    handle.addEventListener('dragend',()=>{
+      card.classList.remove('dragging');
+      document.querySelectorAll('.ic').forEach(c=>c.classList.remove('drag-over'));
+    });
+    card.addEventListener('dragover',e=>{
+      e.preventDefault();
+      e.dataTransfer.dropEffect='move';
+      document.querySelectorAll('.ic').forEach(c=>c.classList.remove('drag-over'));
+      card.classList.add('drag-over');
+    });
+    card.addEventListener('dragleave',()=>card.classList.remove('drag-over'));
+    card.addEventListener('drop',async e=>{
+      e.preventDefault();
+      card.classList.remove('drag-over');
+      if(!_dragId||_dragId===id)return;
+      const fromIdx=S.invItems.findIndex(i=>i.id===_dragId);
+      const toIdx=S.invItems.findIndex(i=>i.id===id);
+      if(fromIdx<0||toIdx<0)return;
+      const item=S.invItems.splice(fromIdx,1)[0];
+      S.invItems.splice(toIdx,0,item);
+      await saveA('inv_items',S.invItems);
+      _dragId=null;re();
+    });
+  });
+  // Touch drag support for mobile
+  let _touchItem=null,_touchStartY=0,_touchClone=null;
+  document.querySelectorAll('.drag-handle').forEach(handle=>{
+    const id=handle.dataset.dragId;
+    handle.addEventListener('touchstart',e=>{
+      _touchItem=id;
+      _touchStartY=e.touches[0].clientY;
+      handle.closest('.ic').classList.add('dragging');
+      e.preventDefault();
+    },{passive:false});
+    handle.addEventListener('touchmove',e=>{
+      e.preventDefault();
+      const y=e.touches[0].clientY;
+      const els=document.querySelectorAll('.ic:not(.dragging)');
+      document.querySelectorAll('.ic').forEach(c=>c.classList.remove('drag-over'));
+      els.forEach(el=>{
+        const r=el.getBoundingClientRect();
+        if(y>=r.top&&y<=r.bottom)el.classList.add('drag-over');
+      });
+    },{passive:false});
+    handle.addEventListener('touchend',async e=>{
+      const card=handle.closest('.ic');
+      card.classList.remove('dragging');
+      const target=document.querySelector('.ic.drag-over');
+      if(target){
+        target.classList.remove('drag-over');
+        const toId=target.querySelector('.drag-handle')?.dataset.dragId;
+        if(toId&&toId!==_touchItem){
+          const fromIdx=S.invItems.findIndex(i=>i.id===_touchItem);
+          const toIdx=S.invItems.findIndex(i=>i.id===toId);
+          if(fromIdx>=0&&toIdx>=0){
+            const item=S.invItems.splice(fromIdx,1)[0];
+            S.invItems.splice(toIdx,0,item);
+            await saveA('inv_items',S.invItems);re();
+          }
+        }
+      }
+      _touchItem=null;
+    });
+  });
 }
 
 async function saveInvNames(){
