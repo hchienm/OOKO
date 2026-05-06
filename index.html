@@ -170,6 +170,12 @@ async function saveO(k,d){try{await dbS(k,JSON.stringify(d))}catch{}}
 const PAY=['個人薪水墊付','品牌公積金支付'];
 const CHANNELS_DEFAULT=['Instagram 直售','Line 直售','市集現場','朋友介紹','官網','moonstone 寄賣','jiang space 寄賣','其他'];
 const CONSIGN_DEF={'moonstone 寄賣':0.70,'jiang space 寄賣':0.80};
+const ORDER_STATUS={pending:'待製作',making:'製作中',ready:'待出貨',shipped:'已出貨 Shipped',completed:'已完款 Completed',cancelled:'已取消'};
+const STATUS_COLOR={pending:'var(--lemon)',making:'var(--sky)',ready:'var(--lilac)',shipped:'var(--mint)',completed:'var(--green)',cancelled:'var(--muted)'};
+const STATUS_BG={pending:'var(--lemonL)',making:'var(--skyL)',ready:'var(--lilacL)',shipped:'var(--mintL)',completed:'var(--greenBg)',cancelled:'var(--bdL)'};
+const getPeriodLabel=(period,freq)=>{if(!period)return'';if(freq==='quarterly'){const[y,q]=period.split('-Q');return y+'年 Q'+q;}return period.slice(0,4)+'年'+parseInt(period.slice(5))+'月';};
+const getCurrentPeriod=(freq)=>{const n=new Date();if(freq==='quarterly'){const q=Math.ceil((n.getMonth()+1)/3);return n.getFullYear()+'-Q'+q;}return n.toISOString().slice(0,7);};
+const getPeriodSales=(store,period,freq,sals)=>{return sals.filter(s=>{const ch=s.channel;if(!ch.includes(store))return false;const d=s.date;if(freq==='quarterly'){const q=Math.ceil((parseInt(d.slice(5,7)))/3);return d.slice(0,4)+'-Q'+q===period;}return d.slice(0,7)===period;});};
 const STORES=['moonstone','jiang space'];
 const CAT_DEFAULT=['材料','研發','行銷','物流','其他'];
 const INV_CAT=['全部','原料','包材','成品'];
@@ -225,6 +231,7 @@ const S={
   exps:[],sals:[],prods:[...DEFAULT_PRODS],
   allocs:[],settings:{...DEFAULT_SETTINGS},
   invItems:[...DEFAULT_INV],invTx:[],invConsign:{},
+  customOrders:[],consignSettlements:[],
   channels:[...CHANNELS_DEFAULT],
   expCats:[...CAT_DEFAULT],
   modals:{},forms:{},confirms:{},
@@ -386,6 +393,18 @@ ${recent.length?`<div class="card">
 //  SALES
 // ══════════════════════════════════════════════
 function salPage(){
+  const sv=S.forms.salV||'direct';
+  return`
+<div class="tabs" style="margin-bottom:14px">
+  <button class="tb${sv==='direct'?' active':''}" data-a="setSalV" data-v="direct">🛍 直售 Direct</button>
+  <button class="tb${sv==='custom'?' active':''}" data-a="setSalV" data-v="custom">✨ 客定款 Custom</button>
+  <button class="tb${sv==='consign'?' active':''}" data-a="setSalV" data-v="consign">🏪 寄賣對帳</button>
+</div>
+${sv==='direct'?salDirect():sv==='custom'?salCustom():salConsign()}`;
+}
+
+// ── Direct Sales ──────────────────────────────
+function salDirect(){
   const f=S.forms.sal||{date:toDay(),prodIdx:0,qty:1,channel:S.channels[0]};
   const prod=S.prods[f.prodIdx]||S.prods[0];
   const price=prod?.price||0;
@@ -408,14 +427,8 @@ function salPage(){
 ${open?`<div class="card">
   <div class="f"><label>日期 Date</label><input class="inp" type="date" value="${esc(f.date)}" data-b="sal.date"></div>
   <div class="f"><label>產品系列 Product</label>
-    ${L1.length?`<div class="lv">✦ Level 1 Classic</div><div class="pg-btn">${L1.map(p=>{const gi=S.prods.indexOf(p);const c=prodCost(p);return`<button class="pb${f.prodIdx===gi?' active':''}" data-a="selProd" data-idx="${gi}">
-      <div class="pb-zh">${esc(p.name)}</div><div class="pb-en">${esc(p.en||'')}</div>
-      <div class="pb-pr">NT$${p.price} · 成本${fmt(c)}</div>
-    </button>`}).join('')}</div>`:''}
-    ${L2.length?`<div class="lv">✦ Level 2 Select</div><div class="pg-btn">${L2.map(p=>{const gi=S.prods.indexOf(p);const c=prodCost(p);return`<button class="pb${f.prodIdx===gi?' active':''}" data-a="selProd" data-idx="${gi}">
-      <div class="pb-zh">${esc(p.name)}</div><div class="pb-en">${esc(p.en||'')}</div>
-      <div class="pb-pr">NT$${p.price} · 成本${fmt(c)}</div>
-    </button>`}).join('')}</div>`:''}
+    ${L1.length?`<div class="lv">✦ Level 1 Classic</div><div class="pg-btn">${L1.map(p=>{const gi=S.prods.indexOf(p);const cost2=prodCost(p);return`<button class="pb${f.prodIdx===gi?' active':''}" data-a="selProd" data-idx="${gi}"><div class="pb-zh">${esc(p.name)}</div><div class="pb-en">${esc(p.en||'')}</div><div class="pb-pr">NT$${p.price} · 成本${fmt(cost2)}</div></button>`}).join('')}</div>`:''}
+    ${L2.length?`<div class="lv">✦ Level 2 Select</div><div class="pg-btn">${L2.map(p=>{const gi=S.prods.indexOf(p);const cost2=prodCost(p);return`<button class="pb${f.prodIdx===gi?' active':''}" data-a="selProd" data-idx="${gi}"><div class="pb-zh">${esc(p.name)}</div><div class="pb-en">${esc(p.en||'')}</div><div class="pb-pr">NT$${p.price} · 成本${fmt(cost2)}</div></button>`}).join('')}</div>`:''}
   </div>
   <div class="g2i">
     <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">數量 Qty</label><input class="inp" type="number" min="1" value="${f.qty}" data-b="sal.qty"></div>
@@ -423,42 +436,236 @@ ${open?`<div class="card">
       <div class="sub-box"><div class="sub-main">${fmt(actual)}</div>${rate?`<div class="sub-sub">標價${fmt(retail)} 抽${Math.round((1-rate)*100)}%</div>`:''}</div>
     </div>
   </div>
-  ${qty>0?`<div style="background:${targetOK?'var(--mintL)':'var(--coralL)'};border:2px solid ${targetOK?'var(--mintM)':'var(--coralM)'};border-radius:10px;padding:10px 14px;margin-bottom:12px">
+  ${qty>0?`<div style="background:${targetOK?'linear-gradient(135deg,var(--mintL),#D0FFF5)':'linear-gradient(135deg,var(--coralL),var(--bubbleL))'};border:2px solid ${targetOK?'var(--mintM)':'var(--coralM)'};border-radius:12px;padding:10px 14px;margin-bottom:12px">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <div style="font-size:11px;font-weight:700;color:${targetOK?'var(--mint)':'var(--coral)'}">這筆毛利 ${targetOK?'✓ 達標':'⚠ 低於目標'}</div>
       <div style="font-size:16px;font-weight:800;color:${targetOK?'var(--green)':'var(--coral)'}">${fmt(profit)} (${fmtP(profRate)})</div>
     </div>
-    <div style="font-size:10px;color:var(--muted);margin-top:3px">成本 ${fmt(cost)} · 目標毛利 ${fmtP(S.settings.targetMargin)}</div>
+    <div style="font-size:10px;color:var(--muted);margin-top:3px">成本 ${fmt(cost)} · 目標 ${fmtP(S.settings.targetMargin)}</div>
   </div>`:''}
   <div class="f"><label>入帳管道 Channel</label>
-    <select class="inp" data-b="sal.channel">${S.channels.map(c=>`<option${f.channel===c?' selected':''}>${esc(c)}</option>`).join('')}</select>
-    <button class="add-cat" style="margin-top:6px;width:100%" data-a="addChannel">＋ 新增管道</button>
+    <select class="inp" data-b="sal.channel">${S.channels.map(ch=>`<option${f.channel===ch?' selected':''}>${esc(ch)}</option>`).join('')}</select>
+    <button class="add-cat" style="margin-top:6px;width:100%" data-a="addChannel">＋ 新增管道 Add Channel</button>
   </div>
   ${rate?`<div class="cw">⚠ ${esc(f.channel)} 抽 ${Math.round((1-rate)*100)}%<br>標價${fmt(retail)} → 實收 <span style="font-size:15px">${fmt(actual)}</span></div>`:''}
-  <button class="btn bm" data-a="submitSal">記錄銷售 ✓</button>
+  <button class="btn bm" data-a="submitSal">記錄銷售 Record ✓</button>
 </div>`:''}
-<div class="lh">銷售明細<span style="font-size:9px;font-weight:400">Records</span><span class="lc">${S.sals.length}</span><div class="ll"></div></div>
+<div class="lh">銷售明細<span class="lc">${S.sals.length}</span><div class="ll"></div></div>
 ${S.sals.length===0?`<div class="empty"><div class="ei">📦</div>尚無銷售記錄</div>`:''}
 ${S.sals.map(s=>{
-  const c=S.confirms['s_'+s.id];
-  const pr=s.profit!=null?s.profit:null;
-  const prRate=s.profitRate!=null?s.profitRate:null;
+  const ck=S.confirms['s_'+s.id];
+  const editMode=S.forms['editSal_'+s.id];
+  if(editMode){
+    return`<div class="card" style="margin-bottom:9px">
+      <div style="font-size:12px;font-weight:700;color:var(--coral);margin-bottom:10px">✏️ 編輯銷售記錄</div>
+      <div class="f"><label>通路 Channel</label>
+        <select class="inp" data-b="editSal_${s.id}.channel">${S.channels.map(ch=>`<option${(editMode.channel||s.channel)===ch?' selected':''}>${esc(ch)}</option>`).join('')}</select>
+      </div>
+      <div class="g2i">
+        <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">數量</label>
+          <input class="inp" type="number" value="${editMode.qty||s.qty}" data-b="editSal_${s.id}.qty"></div>
+        <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">日期</label>
+          <input class="inp" type="date" value="${editMode.date||s.date}" data-b="editSal_${s.id}.date"></div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn bc" style="flex:1;padding:10px;font-size:13px" data-a="saveEditSal" data-id="${s.id}">儲存 Save</button>
+        <button class="btn bo" style="flex:1;padding:10px;font-size:13px" data-a="cancelEditSal" data-id="${s.id}">取消</button>
+      </div>
+    </div>`;
+  }
   return`<div class="card-sm">
   <div class="row-item">
     <div style="margin-bottom:4px;display:flex;gap:5px;flex-wrap:wrap">
       <span class="pill pm">${esc(s.channel)}</span>
-      ${pr!=null?`<span class="pill ${s.profitRate>=S.settings.targetMargin?'pg2':'pc'}">${fmtP(prRate)} 毛利</span>`:''}
+      ${s.profitRate!=null?`<span class="pill ${s.profitRate>=S.settings.targetMargin?'pg2':'pc'}">${fmtP(s.profitRate)} 毛利</span>`:''}
     </div>
     <div class="rz">${esc(s.product)}</div>
     <div class="rm">${esc(s.date)} · ${s.qty}件 × NT$${s.price}${s.retail&&s.retail!==s.subtotal?` <span style="color:var(--amber)">實收${fmt(s.subtotal)}</span>`:''}</div>
-    ${pr!=null?`<div style="font-size:11px;color:var(--muted)">毛利 ${fmt(pr)} · 成本 ${fmt((s.cost||0))}</div>`:''}
   </div>
   <div class="del-w">
     <div style="font-size:16px;font-weight:800;color:var(--green)">+${fmt(s.subtotal)}</div>
-    ${c?`<div class="del-c"><button class="del-y" data-a="delSal" data-id="${s.id}">確認</button><button class="del-n" data-a="cancelDel" data-k="s_${s.id}">取消</button></div>`
-      :`<button class="del-b" data-a="askDel" data-k="s_${s.id}">× 刪除</button>`}
+    <div style="display:flex;gap:5px;margin-top:4px">
+      <button style="font-size:11px;color:var(--sky);background:none;border:none;cursor:pointer;padding:0" data-a="editSal" data-id="${s.id}">✏️</button>
+      ${ck?`<div class="del-c"><button class="del-y" data-a="delSal" data-id="${s.id}">確認</button><button class="del-n" data-a="cancelDel" data-k="s_${s.id}">取消</button></div>`
+        :`<button class="del-b" data-a="askDel" data-k="s_${s.id}">× 刪</button>`}
+    </div>
   </div>
-</div>`}).join('')}`;
+</div>`;}).join('')}`;
+}
+
+// ── Custom Orders 客定款 ──────────────────────
+function salCustom(){
+  const orders=S.customOrders||[];
+  const open=S.forms.customOpen!==false;
+  const f=S.forms.customF||{date:toDay(),customerName:'',product:'',totalAmt:'',depositAmt:'',depositDate:toDay(),depositPaid:false,balanceDate:'',balancePaid:false,status:'pending',note:''};
+  const totalDeposit=orders.filter(o=>o.depositPaid).reduce((a,o)=>a+(o.depositAmt||0),0);
+  const totalBalance=orders.filter(o=>o.balancePaid).reduce((a,o)=>a+(o.totalAmt-(o.depositAmt||0)),0);
+  const pending=orders.filter(o=>o.status!=='completed'&&o.status!=='cancelled').length;
+  return`
+<div class="g2" style="margin-bottom:14px">
+  <div class="kpi" style="background:linear-gradient(135deg,var(--lilacL),#F8E8FF);border-color:var(--lilacM)"><div class="kpi-zh">進行中訂單</div><div class="kpi-en">Active Orders</div><div class="kpi-v" style="color:var(--lilac)">${pending}</div></div>
+  <div class="kpi" style="background:linear-gradient(135deg,var(--mintL),#D0FFF5);border-color:var(--mintM)"><div class="kpi-zh">已收款項</div><div class="kpi-en">Received</div><div class="kpi-v" style="color:var(--mint)">${fmt(totalDeposit+totalBalance)}</div></div>
+</div>
+<div class="ft">
+  <div><span class="ft-t">新增客定款</span><span class="ft-e">New Custom Order</span></div>
+  <button class="ft-b" data-a="toggleCustomForm">${open?'收合 ▲':'展開 ▼'}</button>
+</div>
+${open?`<div class="card">
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">日期 Date</label><input class="inp" type="date" value="${esc(f.date)}" data-b="customF.date"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">客戶暱稱 Customer</label><input class="inp" value="${esc(f.customerName)}" data-b="customF.customerName" placeholder="如：小花"></div>
+  </div>
+  <div class="f"><label>產品內容 Product Details</label><input class="inp" value="${esc(f.product)}" data-b="customF.product" placeholder="如：客製晚安牡丹 2瓶"></div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">總金額 Total</label><input class="inp" type="number" value="${esc(f.totalAmt)}" data-b="customF.totalAmt" placeholder="0"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">訂金 Deposit</label><input class="inp" type="number" value="${esc(f.depositAmt)}" data-b="customF.depositAmt" placeholder="0"></div>
+  </div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">訂金收訖日 Deposit Date</label><input class="inp" type="date" value="${esc(f.depositDate)}" data-b="customF.depositDate"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">訂單狀態 Status</label>
+      <select class="inp" data-b="customF.status">${Object.entries(ORDER_STATUS).map(([k,v])=>`<option value="${k}"${f.status===k?' selected':''}>${v}</option>`).join('')}</select>
+    </div>
+  </div>
+  <div class="f"><label>備註 Note</label><input class="inp" value="${esc(f.note||'')}" data-b="customF.note" placeholder="備註..."></div>
+  <button class="btn bc" data-a="submitCustom">新增客定款 Add ✓</button>
+</div>`:''}
+<div class="lh">客定款記錄<span class="lc">${orders.length}</span><div class="ll"></div></div>
+${orders.length===0?`<div class="empty"><div class="ei">✨</div>尚無客定款記錄</div>`:''}
+${orders.map(o=>{
+  const balance=(o.totalAmt||0)-(o.depositAmt||0);
+  const totalReceived=(o.depositPaid?(o.depositAmt||0):0)+(o.balancePaid?balance:0);
+  const outstanding=(o.totalAmt||0)-totalReceived;
+  const ck=S.confirms['co_'+o.id];
+  const editing=S.forms['editCO_'+o.id];
+  return`<div class="card" style="margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+      <div>
+        <div style="display:flex;gap:6px;margin-bottom:4px;align-items:center">
+          <span style="font-size:13px;font-weight:800">${esc(o.customerName||'未命名')}</span>
+          <span class="pill" style="background:${STATUS_BG[o.status]||'var(--bdL)'};color:${STATUS_COLOR[o.status]||'var(--muted)'};font-size:9px">${ORDER_STATUS[o.status]||o.status}</span>
+        </div>
+        <div style="font-size:13px;color:var(--ink)">${esc(o.product)}</div>
+        <div style="font-size:11px;color:var(--muted)">${esc(o.date)}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:18px;font-weight:800;color:var(--coral)">${fmt(o.totalAmt||0)}</div>
+        ${outstanding>0?`<div style="font-size:11px;color:var(--amber);font-weight:700">未收 ${fmt(outstanding)}</div>`:'<div style="font-size:11px;color:var(--green);font-weight:700">✓ 全收</div>'}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+      <div style="background:${o.depositPaid?'var(--mintL)':'var(--bdL)'};border:2px solid ${o.depositPaid?'var(--mintM)':'var(--bd)'};border-radius:10px;padding:10px">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;margin-bottom:3px">訂金 Deposit</div>
+        <div style="font-size:16px;font-weight:800;color:${o.depositPaid?'var(--green)':'var(--ink)'}">${fmt(o.depositAmt||0)}</div>
+        <div style="font-size:10px;color:var(--muted)">${o.depositDate||'未設日期'}</div>
+        <button style="margin-top:6px;width:100%;padding:5px;border:2px solid ${o.depositPaid?'var(--mintM)':'var(--bd)'};border-radius:8px;background:${o.depositPaid?'var(--mint)':'none'};color:${o.depositPaid?'#FFF':'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" data-a="toggleDeposit" data-id="${o.id}">${o.depositPaid?'✓ 已收':'標記已收'}</button>
+      </div>
+      <div style="background:${o.balancePaid?'var(--mintL)':'var(--bdL)'};border:2px solid ${o.balancePaid?'var(--mintM)':'var(--bd)'};border-radius:10px;padding:10px">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;margin-bottom:3px">尾款 Balance</div>
+        <div style="font-size:16px;font-weight:800;color:${o.balancePaid?'var(--green)':'var(--ink)'}">${fmt(balance)}</div>
+        <div style="font-size:10px;color:var(--muted)">${o.balanceDate||'未設日期'}</div>
+        <button style="margin-top:6px;width:100%;padding:5px;border:2px solid ${o.balancePaid?'var(--mintM)':'var(--bd)'};border-radius:8px;background:${o.balancePaid?'var(--mint)':'none'};color:${o.balancePaid?'#FFF':'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" data-a="toggleBalance" data-id="${o.id}">${o.balancePaid?'✓ 已收':'標記已收'}</button>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${Object.entries(ORDER_STATUS).filter(([k])=>k!==o.status&&k!=='cancelled').map(([k,v])=>`<button style="padding:5px 10px;border:2px solid var(--bd);border-radius:8px;background:none;color:var(--muted);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" data-a="setOrderStatus" data-id="${o.id}" data-status="${k}">${v}</button>`).join('')}
+      ${ck?`<div class="del-c"><button class="del-y" data-a="delCustom" data-id="${o.id}">確認刪除</button><button class="del-n" data-a="cancelDel" data-k="co_${o.id}">取消</button></div>`
+        :`<button class="del-b" style="margin-left:auto" data-a="askDel" data-k="co_${o.id}">× 刪除</button>`}
+    </div>
+    ${o.note?`<div style="font-size:11px;color:var(--muted);margin-top:6px">📝 ${esc(o.note)}</div>`:''}
+  </div>`;}).join('')}`;
+}
+
+// ── Consignment Reconciliation 寄賣對帳 ──────
+function salConsign(){
+  const sel=S.forms.consignStore||'moonstone';
+  const freq=S.settings.consignFreq||'monthly';
+  const period=S.forms.consignPeriod||getCurrentPeriod(freq);
+  const allPeriods=[...new Set(S.sals.filter(s=>s.channel===sel+' 寄賣').map(s=>{
+    if(freq==='quarterly'){const q=Math.ceil(parseInt(s.date.slice(5,7))/3);return s.date.slice(0,4)+'-Q'+q;}
+    return s.date.slice(0,7);
+  }))].sort().reverse();
+  if(!allPeriods.includes(getCurrentPeriod(freq)))allPeriods.unshift(getCurrentPeriod(freq));
+  const periodSales=getPeriodSales(sel,period,freq,S.sals);
+  const consignRate=(S.settings.consign||CONSIGN_DEF)[sel+' 寄賣']||0.70;
+  const retailTotal=periodSales.reduce((a,s)=>a+(s.retail||s.subtotal),0);
+  const expectedAmt=periodSales.reduce((a,s)=>a+s.subtotal,0);
+  const settlement=S.consignSettlements.find(st=>st.store===sel&&st.period===period);
+  const receivedAmt=settlement?.receivedAmt||0;
+  const outstanding=expectedAmt-receivedAmt;
+  const deliveries=S.invTx.filter(tx=>tx.type==='send'&&tx.store===sel);
+  const periodDeliveries=deliveries.filter(d=>{
+    if(freq==='quarterly'){const q=Math.ceil(parseInt(d.date.slice(5,7))/3);return d.date.slice(0,4)+'-Q'+q===period;}
+    return d.date.slice(0,7)===period;
+  });
+  const storeStock=S.invConsign[sel]||{};
+  const totalStock=Object.values(storeStock).reduce((a,v)=>a+(v||0),0);
+  return`
+<div style="display:flex;gap:8px;margin-bottom:12px">
+  ${STORES.map(s=>`<button class="btn ${sel===s?'bc':'bo'}" style="flex:1;font-size:13px;padding:11px;font-weight:700" data-a="setConsignStore" data-v="${s}">${esc(s)}</button>`).join('')}
+</div>
+<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+  <select class="inp" style="flex:1" data-b="consignPeriod">
+    ${allPeriods.map(p=>`<option value="${p}"${period===p?' selected':''}>${getPeriodLabel(p,freq)}</option>`).join('')}
+  </select>
+  <select class="inp" style="width:110px" data-b="consignFreq">
+    <option value="monthly"${freq==='monthly'?' selected':''}>每月</option>
+    <option value="quarterly"${freq==='quarterly'?' selected':''}>每季</option>
+  </select>
+</div>
+<div class="card" style="background:linear-gradient(135deg,var(--coralL),var(--bubbleL));border-color:var(--coralM);margin-bottom:10px">
+  <div style="font-size:11px;font-weight:700;color:var(--coral);margin-bottom:10px">${esc(sel)} · ${getPeriodLabel(period,freq)} 對帳</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+    <div style="background:rgba(255,255,255,.7);border-radius:10px;padding:10px">
+      <div style="font-size:10px;color:var(--muted);font-weight:700">賣出瓶數</div>
+      <div style="font-size:22px;font-weight:800;color:var(--coral)">${periodSales.reduce((a,s)=>a+s.qty,0)}<span style="font-size:11px;color:var(--muted)">瓶</span></div>
+    </div>
+    <div style="background:rgba(255,255,255,.7);border-radius:10px;padding:10px">
+      <div style="font-size:10px;color:var(--muted);font-weight:700">標價總計</div>
+      <div style="font-size:22px;font-weight:800;color:var(--ink)">${fmt(retailTotal)}</div>
+    </div>
+  </div>
+  <div style="background:rgba(255,255,255,.7);border-radius:10px;padding:12px;margin-bottom:8px">
+    <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+      <span style="font-size:12px;color:var(--muted);font-weight:700">應收金額（你拿 ${fmtP(consignRate)}）</span>
+      <span style="font-size:16px;font-weight:800;color:var(--green)">${fmt(expectedAmt)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+      <span style="font-size:12px;color:var(--muted);font-weight:700">已收金額 Received</span>
+      <span style="font-size:16px;font-weight:800;color:${receivedAmt>0?'var(--mint)':'var(--muted)'}">${fmt(receivedAmt)}</span>
+    </div>
+    <div style="height:1px;background:var(--bd);margin:8px 0"></div>
+    <div style="display:flex;justify-content:space-between">
+      <span style="font-size:12px;font-weight:800;color:${outstanding>0?'var(--amber)':'var(--green)'}">${outstanding>0?'⚠ 尚未收款':'✓ 已全數收款'}</span>
+      <span style="font-size:18px;font-weight:800;color:${outstanding>0?'var(--amber)':'var(--green)'}">${fmt(outstanding)}</span>
+    </div>
+  </div>
+  ${settlement?.settled?`<div style="background:var(--greenBg);border:2px solid var(--greenBd);border-radius:10px;padding:10px;font-size:12px;color:var(--green);font-weight:700">✓ 已對帳完成 ${esc(settlement.settledDate||'')} · 收款 ${fmt(settlement.receivedAmt)}</div>`:`
+  <div style="display:flex;gap:8px;align-items:center">
+    <input class="inp" type="number" placeholder="輸入實際收款金額..." value="${settlement?.receivedAmt||''}" data-b="consignRecv" style="flex:1">
+    <button class="btn bc" style="width:auto;padding:11px 16px;font-size:13px;white-space:nowrap" data-a="markSettled" data-store="${esc(sel)}" data-period="${esc(period)}">記錄收款 ✓</button>
+  </div>`}
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
+  <div class="kpi" style="background:var(--skyL);border-color:var(--skyM)"><div class="kpi-zh">目前在店庫存</div><div class="kpi-en">Current Stock</div><div class="kpi-v" style="color:var(--sky)">${totalStock}<span style="font-size:12px">瓶</span></div></div>
+  <button class="btn bc" style="height:auto;font-size:12px;padding:10px" data-a="openSend" data-s="${esc(sel)}">＋ 送貨到店 Deliver</button>
+</div>
+${periodDeliveries.length?`<div class="card">
+  <div class="sec">本期送貨記錄 <span>Deliveries This Period</span></div>
+  ${periodDeliveries.map(d=>`<div class="rr"><span class="rl">📦 ${esc(d.date)} · ${esc(d.itemName)}</span><span class="rv">+${d.qty}瓶</span></div>`).join('')}
+</div>`:''}
+${periodSales.length?`<div class="card">
+  <div class="sec">本期銷售明細 <span>Sales This Period</span></div>
+  ${periodSales.map(s=>`<div class="rr"><span class="rl">${esc(s.date)} · ${esc(s.product)} ×${s.qty}</span><span class="rv" style="color:var(--green)">${fmt(s.subtotal)}</span></div>`).join('')}
+  <div class="rr" style="border:none"><span class="rl" style="font-weight:700">合計</span><span class="rv" style="color:var(--green);font-size:16px">${fmt(expectedAmt)}</span></div>
+</div>`:`<div class="empty" style="padding:20px"><div class="ei" style="font-size:24px">🏪</div>本期尚無 ${esc(sel)} 寄賣紀錄</div>`}
+<div style="margin-top:8px">
+  <div class="lh">所有對帳記錄 <span style="font-size:9px">Settlement History</span><div class="ll"></div></div>
+  ${S.consignSettlements.filter(st=>st.store===sel).length===0?`<div style="font-size:12px;color:var(--muted);padding:10px 0">尚無對帳記錄</div>`:''}
+  ${S.consignSettlements.filter(st=>st.store===sel).sort((a,b)=>b.period.localeCompare(a.period)).map(st=>`<div class="rr">
+    <span class="rl">${getPeriodLabel(st.period,freq)} ${st.settled?'✓':''}</span>
+    <div style="text-align:right"><div class="rv" style="color:var(--green)">${fmt(st.receivedAmt)}</div><div style="font-size:10px;color:var(--muted)">${st.settledDate||''}</div></div>
+  </div>`).join('')}
+</div>`;
 }
 
 // ══════════════════════════════════════════════
@@ -521,7 +728,25 @@ ${open?`<div class="card">
 </div>`:''}
 <div class="lh">支出明細<span style="font-size:9px;font-weight:400">Records</span><span class="lc">${S.exps.length}</span><div class="ll"></div></div>
 ${S.exps.length===0?`<div class="empty"><div class="ei">💸</div>尚無支出記錄</div>`:''}
-${S.exps.map(e=>{const c=S.confirms['e_'+e.id];return`<div class="card-sm">
+${S.exps.map(e=>{
+  const ck=S.confirms['e_'+e.id];
+  const em=S.forms['editExp_'+e.id];
+  if(em){return`<div class="card" style="margin-bottom:9px">
+    <div style="font-size:12px;font-weight:700;color:var(--coral);margin-bottom:10px">✏️ 編輯支出 Edit Expense</div>
+    <div class="cat-wrap">${S.expCats.map(cat=>`<button class="cat-tag${(em.category||e.category)===cat?' active':''}" data-a="setEditExpCat" data-id="${e.id}" data-v="${esc(cat)}">${esc(cat)}</button>`).join('')}</div>
+    <div class="g2i" style="margin-top:8px">
+      <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">金額</label>
+        <input class="inp" type="number" value="${em.amount!=null?em.amount:e.amount}" data-b="editExp_${e.id}.amount"></div>
+      <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">日期</label>
+        <input class="inp" type="date" value="${em.date||e.date}" data-b="editExp_${e.id}.date"></div>
+    </div>
+    <div class="f"><label>描述</label><input class="inp" value="${esc(em.description!=null?em.description:e.description)}" data-b="editExp_${e.id}.description"></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn bc" style="flex:1;padding:10px;font-size:13px" data-a="saveEditExp" data-id="${e.id}">儲存 Save</button>
+      <button class="btn bo" style="flex:1;padding:10px;font-size:13px" data-a="cancelEditExp" data-id="${e.id}">取消</button>
+    </div>
+  </div>`;}
+  return`<div class="card-sm">
   <div class="row-item">
     <div style="margin-bottom:4px;display:flex;gap:5px;flex-wrap:wrap">
       <span class="pill ${e.payMethod===PAY[0]?'pc':'py'}">${e.payMethod===PAY[0]?'個人墊付':'公積金'}</span>
@@ -529,13 +754,16 @@ ${S.exps.map(e=>{const c=S.confirms['e_'+e.id];return`<div class="card-sm">
       ${e.supplier?`<span class="pill pmu" style="font-size:9px">${esc(e.supplier)}</span>`:''}
     </div>
     <div class="rz">${esc(e.description)}</div>
-    <div class="rm">${esc(e.date)}${e.origin?' · '+{taiwan:'🇹🇼台灣',china:'🇨🇳中國',korea:'🇰🇷韓國'}[e.origin]||'':''}${e.note?` · ${esc(e.note)}`:''}</div>
-    ${e.origAmount&&e.currency?`<div style="font-size:10px;color:var(--muted)">原始金額 ${fmtCurrency(e.origAmount,e.currency)}</div>`:''}
+    <div class="rm">${esc(e.date)}${e.note?` · ${esc(e.note)}`:''}</div>
+    ${e.origAmount&&e.currency?`<div style="font-size:10px;color:var(--muted)">原始 ${fmtCurrency(e.origAmount,e.currency)}</div>`:''}
   </div>
   <div class="del-w">
     <div style="font-size:16px;font-weight:800;color:var(--coral)">-${fmt(e.amount)}</div>
-    ${c?`<div class="del-c"><button class="del-y" data-a="delExp" data-id="${e.id}">確認</button><button class="del-n" data-a="cancelDel" data-k="e_${e.id}">取消</button></div>`
-      :`<button class="del-b" data-a="askDel" data-k="e_${e.id}">× 刪除</button>`}
+    <div style="display:flex;gap:5px;margin-top:4px">
+      <button style="font-size:11px;color:var(--sky);background:none;border:none;cursor:pointer;padding:0" data-a="editExp" data-id="${e.id}">✏️</button>
+      ${ck?`<div class="del-c"><button class="del-y" data-a="delExp" data-id="${e.id}">確認</button><button class="del-n" data-a="cancelDel" data-k="e_${e.id}">取消</button></div>`
+        :`<button class="del-b" data-a="askDel" data-k="e_${e.id}">× 刪</button>`}
+    </div>
   </div>
 </div>`}).join('')}`;
 }
@@ -571,6 +799,10 @@ ${items.map(item=>{
   const barColor=low?'var(--coral)':pct>80?'var(--mint)':'var(--lemonD)';
   return`<div class="ic${low?' low':''}">
   <div style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div style="display:flex;flex-direction:column;gap:3px;margin-right:8px;flex-shrink:0">
+      <button style="width:26px;height:26px;border:2px solid var(--bd);border-radius:6px;background:var(--sf);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center" data-a="invUp" data-id="${item.id}">↑</button>
+      <button style="width:26px;height:26px;border:2px solid var(--bd);border-radius:6px;background:var(--sf);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center" data-a="invDown" data-id="${item.id}">↓</button>
+    </div>
     <div style="flex:1;min-width:0">
       <div style="display:flex;gap:5px;margin-bottom:4px;flex-wrap:wrap">
         <span class="pill pmu" style="font-size:9px">${esc(item.cat)}</span>
@@ -583,7 +815,7 @@ ${items.map(item=>{
         <div style="font-size:10px;color:var(--muted);white-space:nowrap">安全線 ${item.safe} ${esc(item.unit)}</div>
       </div>
     </div>
-    <div style="text-align:right;flex-shrink:0;margin-left:10px">
+    <div style="text-align:right;flex-shrink:0;margin-left:8px">
       <div style="font-size:26px;font-weight:800;color:${low?'var(--coral)':'var(--ink)'};line-height:1">${item.qty}<span style="font-size:12px;font-weight:500;color:var(--muted);margin-left:2px">${esc(item.unit)}</span></div>
       <div class="qg">
         <button class="bsm" style="background:var(--mintL);color:var(--mint)" data-a="qkIn" data-id="${item.id}">＋進貨</button>
@@ -973,7 +1205,14 @@ function settingsModal(){
       </div>
     </div>
     <div class="card" style="margin-bottom:12px">
-      <div class="sec">寄賣抽成 <span>Consignment</span></div>
+      <div class="sec">寄賣對帳頻率 <span>Settlement Frequency</span></div>
+      <div class="f"><label>對帳週期 Settlement Cycle</label>
+        <select class="inp" data-b="settings.consignFreq">
+          <option value="monthly"${(S.settings.consignFreq||'monthly')==='monthly'?' selected':''}>每月 Monthly</option>
+          <option value="quarterly"${S.settings.consignFreq==='quarterly'?' selected':''}>每季 Quarterly</option>
+        </select>
+      </div>
+      <div class="sec">寄賣抽成 <span>Consignment Rates</span></div>
       <div class="f"><label>moonstone（你拿的比例）</label>
         <select class="inp" data-b="settings.consign.ms">${[0.60,0.65,0.70,0.75,0.80].map(v=>`<option value="${v}"${(c.consign?.['moonstone 寄賣']||0.70)==v?' selected':''}>你拿 ${fmtP(v)}（店抽 ${fmtP(1-v)}）</option>`).join('')}</select>
       </div>
@@ -1240,6 +1479,12 @@ function bind(path,val){
   }
   else if(p[0]==='sendF'){if(!S.forms.sendF)S.forms.sendF={store:'moonstone',prodName:'',qty:'',note:''};S.forms.sendF[p[1]]=val;}
   else if(p[0]==='qkF'){if(!S.forms.qkF)S.forms.qkF={qty:'',unitCost:'',note:''};S.forms.qkF[p[1]]=val;}
+  else if(p[0]==='customF'){if(!S.forms.customF)S.forms.customF={date:toDay(),customerName:'',product:'',totalAmt:'',depositAmt:'',depositDate:toDay(),balanceDate:'',status:'pending',note:''};S.forms.customF[p[1]]=val;}
+  else if(p[0]==='editExp'){if(S.forms['editExp_'+p[1]])S.forms['editExp_'+p[1]][p[2]]=val;}
+  else if(p[0]==='editSal'){if(S.forms['editSal_'+p[1]])S.forms['editSal_'+p[1]][p[2]]=val;}
+  else if(p[0]==='consignPeriod'){S.forms.consignPeriod=val;re();}
+  else if(p[0]==='consignFreq'){S.settings.consignFreq=val;saveO('settings',S.settings);re();}
+  else if(p[0]==='consignRecv'){S.forms.consignRecvAmt=val;}
   else if(p[0]==='repM'){S.forms.repM=val;re();}
   else if(p[0]==='repY'){S.forms.repY=val;re();}
   else if(p[0]==='ptIdx'){S.forms.ptIdx=parseInt(val);re();}
@@ -1249,6 +1494,7 @@ function bind(path,val){
   }
   else if(p[0]==='settings'){
     if(p[1]==='reserveRate'||p[1]==='salaryAmt'||p[1]==='baseCost'||p[1]==='targetMargin')S.settings[p[1]]=parseFloat(val)||0;
+    else if(p[1]==='consignFreq'){S.settings.consignFreq=val;}
     else if(p[1]==='mlBase'){if(!S.settings.mlPerBottle)S.settings.mlPerBottle={base:150,eo:22.5};S.settings.mlPerBottle.base=parseFloat(val)||150;}
     else if(p[1]==='mlEO'){if(!S.settings.mlPerBottle)S.settings.mlPerBottle={base:150,eo:22.5};S.settings.mlPerBottle.eo=parseFloat(val)||22.5;}
     else if(p[1]==='consign'){if(!S.settings.consign)S.settings.consign={...CONSIGN_DEF};if(p[2]==='ms')S.settings.consign['moonstone 寄賣']=parseFloat(val)||0.70;if(p[2]==='js')S.settings.consign['jiang space 寄賣']=parseFloat(val)||0.80;}
@@ -1308,6 +1554,28 @@ async function act(a,d){
   else if(a==='exportJSON')   exportJSON();
   else if(a==='importJSON')   {}
   else if(a==='loadDemo')     await loadDemo();
+  // Sales sub-tabs
+  else if(a==='setSalV')      {S.forms.salV=d.v;re();}
+  else if(a==='toggleCustomForm'){S.forms.customOpen=!(S.forms.customOpen!==false);re();}
+  else if(a==='submitCustom') await submitCustom();
+  else if(a==='delCustom')    await delCustom(d.id);
+  else if(a==='toggleDeposit')await togglePayment(d.id,'deposit');
+  else if(a==='toggleBalance')await togglePayment(d.id,'balance');
+  else if(a==='setOrderStatus')await setOrderStatus(d.id,d.status);
+  else if(a==='markSettled')  await markSettled(d.store,d.period);
+  else if(a==='setConsignStore'){S.forms.consignStore=d.v;re();}
+  // Expense edit
+  else if(a==='editExp')      {S.forms['editExp_'+d.id]={...S.exps.find(e=>e.id===d.id)};re();}
+  else if(a==='cancelEditExp'){delete S.forms['editExp_'+d.id];re();}
+  else if(a==='setEditExpCat'){if(S.forms['editExp_'+d.id])S.forms['editExp_'+d.id].category=d.v;re();}
+  else if(a==='saveEditExp')  await saveEditExp(d.id);
+  // Sales edit
+  else if(a==='editSal')      {S.forms['editSal_'+d.id]={...S.sals.find(s=>s.id===d.id)};re();}
+  else if(a==='cancelEditSal'){delete S.forms['editSal_'+d.id];re();}
+  else if(a==='saveEditSal')  await saveEditSal(d.id);
+  // Inventory ordering
+  else if(a==='invUp')        await invMove(d.id,-1);
+  else if(a==='invDown')      await invMove(d.id,1);
 }
 
 // ── Action handlers ───────────────────────────
@@ -1485,6 +1753,79 @@ function delProd(i){
   S.prods=S.prods.filter((_,idx)=>idx!==i);saveA('prods',S.prods);re();
 }
 
+// ── Custom Order functions ──────────────────
+async function submitCustom(){
+  const f=S.forms.customF||{};
+  if(!f.customerName?.trim()){showToast('請填寫客戶名稱');return;}
+  if(!f.product?.trim()){showToast('請填寫產品內容');return;}
+  if(!f.totalAmt||parseFloat(f.totalAmt)<=0){showToast('請填寫總金額');return;}
+  const rec={id:uid(),date:f.date||toDay(),customerName:f.customerName.trim(),product:f.product.trim(),
+    totalAmt:parseFloat(f.totalAmt),depositAmt:parseFloat(f.depositAmt)||0,depositDate:f.depositDate||toDay(),
+    depositPaid:false,balanceDate:f.balanceDate||'',balancePaid:false,status:f.status||'pending',note:f.note||''};
+  S.customOrders=[rec,...(S.customOrders||[])];
+  await saveA('customOrders',S.customOrders);
+  S.forms.customF={date:toDay(),customerName:'',product:'',totalAmt:'',depositAmt:'',depositDate:toDay(),status:'pending',note:''};
+  showToast('✓ 客定款已記錄 ✨');
+}
+async function delCustom(id){
+  S.customOrders=(S.customOrders||[]).filter(o=>o.id!==id);
+  await saveA('customOrders',S.customOrders);
+  delete S.confirms['co_'+id];re();
+}
+async function togglePayment(id,type){
+  const o=(S.customOrders||[]).find(x=>x.id===id);
+  if(!o)return;
+  if(type==='deposit')o.depositPaid=!o.depositPaid;
+  else o.balancePaid=!o.balancePaid;
+  if(o.depositPaid&&o.balancePaid)o.status='completed';
+  await saveA('customOrders',S.customOrders);
+  showToast(type==='deposit'?'✓ 訂金狀態已更新':'✓ 尾款狀態已更新');
+}
+async function setOrderStatus(id,status){
+  const o=(S.customOrders||[]).find(x=>x.id===id);
+  if(!o)return;
+  o.status=status;
+  if(status==='completed'){o.depositPaid=true;o.balancePaid=true;}
+  await saveA('customOrders',S.customOrders);
+  showToast('✓ 狀態已更新');
+}
+async function markSettled(store,period){
+  const recv=parseFloat(S.forms.consignRecvAmt);
+  if(!recv||recv<=0){showToast('請先輸入實際收款金額');return;}
+  const existing=S.consignSettlements.findIndex(st=>st.store===store&&st.period===period);
+  const rec={id:uid(),store,period,receivedAmt:recv,settled:true,settledDate:toDay(),note:''};
+  if(existing>=0)S.consignSettlements[existing]=rec;
+  else S.consignSettlements=[rec,...S.consignSettlements];
+  await saveA('consignSettlements',S.consignSettlements);
+  S.forms.consignRecvAmt='';
+  showToast(`✓ ${store} 對帳完成！收款 ${fmt(recv)} 🎉`);
+}
+// ── Expense/Sale edit functions ──────────────
+async function saveEditExp(id){
+  const em=S.forms['editExp_'+id];if(!em)return;
+  const idx=S.exps.findIndex(e=>e.id===id);if(idx<0)return;
+  S.exps[idx]={...S.exps[idx],...em,amount:parseFloat(em.amount)||S.exps[idx].amount};
+  await saveA('exps',S.exps);
+  delete S.forms['editExp_'+id];
+  showToast('✓ 支出已更新');
+}
+async function saveEditSal(id){
+  const em=S.forms['editSal_'+id];if(!em)return;
+  const idx=S.sals.findIndex(s=>s.id===id);if(idx<0)return;
+  S.sals[idx]={...S.sals[idx],...em,qty:parseInt(em.qty)||S.sals[idx].qty};
+  await saveA('sals',S.sals);
+  delete S.forms['editSal_'+id];
+  showToast('✓ 銷售已更新');
+}
+// ── Inventory reordering ──────────────────────
+async function invMove(id,dir){
+  const idx=S.invItems.findIndex(i=>i.id===id);
+  const ni=idx+dir;
+  if(ni<0||ni>=S.invItems.length)return;
+  [S.invItems[idx],S.invItems[ni]]=[S.invItems[ni],S.invItems[idx]];
+  await saveA('inv_items',S.invItems);re();
+}
+
 async function saveInvNames(){
   document.querySelectorAll('[data-b^="invItem."]').forEach(el=>bind(el.dataset.b,el.value));
   await saveA('inv_items',S.invItems);
@@ -1526,7 +1867,7 @@ function exportAnnNotion(){const y=S.forms.repY||new Date().getFullYear().toStri
 function copyRepTxt(){copyText(S.forms.repTxt||'',()=>showToast('✓ 已複製 Copied'));}
 
 function exportJSON(){
-  const data={exps:S.exps,sals:S.sals,prods:S.prods,settings:S.settings,invItems:S.invItems,invTx:S.invTx,invConsign:S.invConsign,channels:S.channels,expCats:S.expCats,at:new Date().toISOString(),v:'ooko_v6'};
+  const data={exps:S.exps,sals:S.sals,prods:S.prods,settings:S.settings,invItems:S.invItems,invTx:S.invTx,invConsign:S.invConsign,channels:S.channels,expCats:S.expCats,customOrders:S.customOrders,consignSettlements:S.consignSettlements,at:new Date().toISOString(),v:'ooko_v7'};
   dl(`OOKO_備份_${toDay()}.json`,JSON.stringify(data,null,2),'application/json');
   showToast('✓ 備份已下載 💾');
 }
@@ -1546,6 +1887,8 @@ async function importJSON(file){
       if(d.invConsign){S.invConsign=d.invConsign;await saveO('inv_consign',S.invConsign);}
       if(d.channels?.length){S.channels=d.channels;await saveA('channels',S.channels);}
       if(d.expCats?.length){S.expCats=d.expCats;await saveA('expCats',S.expCats);}
+      if(d.customOrders){S.customOrders=d.customOrders;await saveA('customOrders',S.customOrders);}
+      if(d.consignSettlements){S.consignSettlements=d.consignSettlements;await saveA('consignSettlements',S.consignSettlements);}
       delete S.modals.backup;
       showToast('✓ 備份還原成功 🌸');
     }catch(err){alert('讀取失敗：'+err.message);}
@@ -1581,11 +1924,12 @@ async function loadDemo(){
 
 // ── INIT ──────────────────────────────────────
 async function init(){
-  const[exps,sals,prods,settings,invItems,invTx,invConsign,channels,expCats]=await Promise.all([
+  const[exps,sals,prods,settings,invItems,invTx,invConsign,channels,expCats,customOrders,consignSettlements]=await Promise.all([
     loadA('exps'),loadA('sals'),loadA('prods'),
     loadO('settings',DEFAULT_SETTINGS),
     loadA('inv_items'),loadA('inv_tx'),loadO('inv_consign',{}),
     loadA('channels'),loadA('expCats'),
+    loadA('customOrders'),loadA('consignSettlements'),
   ]);
   S.exps=exps;S.sals=sals;
   if(prods&&prods.length)S.prods=prods;
@@ -1595,6 +1939,8 @@ async function init(){
   if(invConsign)S.invConsign=invConsign;
   if(channels&&channels.length)S.channels=channels;
   if(expCats&&expCats.length)S.expCats=expCats;
+  if(customOrders)S.customOrders=customOrders;
+  if(consignSettlements)S.consignSettlements=consignSettlements;
   S.forms={salOpen:true,expOpen:true,invTxOpen:true};
   render();
 }
