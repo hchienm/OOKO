@@ -135,7 +135,17 @@ select.inp{appearance:none;-webkit-appearance:none;background-image:url("data:im
 <script>
 
 const DB='ooko5';
-function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open(DB,1);r.onupgradeneeded=e=>e.target.result.createObjectStore('kv');r.onsuccess=e=>res(e.target.result);r.onerror=()=>rej(r.error)})}
+// 【防卡死裝甲】加入 timeout 避免資料庫掛起導致白屏
+function openDB(){
+  return new Promise((res,rej)=>{
+    const t=setTimeout(()=>rej(new Error("DB Timeout")), 3000);
+    const r=indexedDB.open(DB,1);
+    r.onupgradeneeded=e=>e.target.result.createObjectStore('kv');
+    r.onsuccess=e=>{clearTimeout(t);res(e.target.result)};
+    r.onerror=()=>{clearTimeout(t);rej(r.error)};
+    r.onblocked=()=>{clearTimeout(t);rej(new Error("DB Blocked"))};
+  })
+}
 async function dbG(k){try{const db=await openDB();return new Promise((r2,rj)=>{const r=db.transaction('kv','readonly').objectStore('kv').get(k);r.onsuccess=()=>r2(r.result??null);r.onerror=()=>rj(r.error)})}catch{return null}}
 async function dbS(k,v){try{const db=await openDB();return new Promise((r2,rj)=>{const r=db.transaction('kv','readwrite').objectStore('kv').put(v,k);r.onsuccess=()=>r2(true);r.onerror=()=>rj(r.error)})}catch{return false}}
 async function loadA(k){try{const r=await dbG(k);return r?JSON.parse(r):[]}catch{return[]}}
@@ -200,7 +210,7 @@ const DEF_INV=[
 ];
 const DEF_SETTINGS={reserveRate:0.20,salaryAmt:0,baseCost:118,targetMargin:0.50,
   consign:{...DEF_CONSIGN},consignStores:[...DEF_STORES],consignFreq:'monthly',
-  productSpecs:[{name:'擴香瓶 Diffuser',baseItem:'',base:104,eoItem:'',eo:26,fiber:6},{name:'蠟燭 Candle',baseItem:'',base:0,eoItem:'',eo:0,fiber:1}],
+  productSpecs:[{name:'擴香瓶 Diffuser',baseItem:'基底擴香液（5000ml/桶）',base:104,eoItem:'精油 20% 濃度',eo:26,fiber:6},{name:'蠟燭 Candle',baseItem:'大豆蠟',base:0,eoItem:'精油',eo:0,fiber:1}],
   currencies:[{code:'TWD',name:'台幣',symbol:'NT$',rate:1,flag:'🇹🇼'},{code:'CNY',name:'人民幣',symbol:'¥',rate:4.45,flag:'🇨🇳'},{code:'KRW',name:'韓元',symbol:'₩',rate:0.023,flag:'🇰🇷'},{code:'USD',name:'美元',symbol:'$',rate:32.0,flag:'🇺🇸'}],
 };
 const S={tab:'dash',exps:[],sals:[],prods:[...DEF_PRODS],customOrders:[],consignSettlements:[],
@@ -592,7 +602,6 @@ ${orders.map(o=>{
 </div>`}).join('')}`;
 }
 
-// EXPENSE
 function expPage(){
   const f=S.forms.exp||{date:toDay(),category:S.expCats[0],description:'',amount:'',currency:'TWD',origin:'',payMethod:PAY[0],supplier:'',note:''};
   const open=S.forms.expOpen!==false;
@@ -665,7 +674,6 @@ ${S.exps.map(e=>{
 </div>`;}).join('')}`;
 }
 
-// INVENTORY
 function invPage(){
   const v=S.forms.invV||'stock';
   const low=S.invItems.filter(i=>i.qty<=i.safe&&i.safe>0);
@@ -678,7 +686,7 @@ function invStock(){
   const cat=S.forms.invCat||'全部';
   const cats=['全部','原料','包材','成品','其他'];
   const items=cat==='全部'?S.invItems:S.invItems.filter(i=>i.cat===cat);
-  const specs=S.settings.productSpecs||[{name:'擴香瓶',baseItem:'',base:104,eoItem:'',eo:26}];
+  const specs=S.settings.productSpecs||[{name:'擴香瓶',base:104,eo:26}];
   const baseItem=S.invItems.find(i=>i.name.includes('基底擴香液')||i.name.includes('基底'));
   const eoItem=S.invItems.find(i=>i.name.includes('精油')&&i.unit==='ml');
   const estimates=specs.filter(sp=>sp.base>0||sp.eo>0).map(sp=>{
@@ -730,7 +738,7 @@ ${items.map(item=>{
   </div>
 </div>`}).join('')}
 <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
-  <button class="btn bm" style="font-size:11px;padding:11px 4px" data-a="openProduce">🧪 製作</button>
+  <button class="btn bm" style="font-size:11px;padding:11px 4px" data-a="openProduce">🧪 多選製作</button>
   <button class="btn bc" style="font-size:11px;padding:11px 4px" data-a="openStocktake">📋 盤點</button>
   <button class="btn bo" style="font-size:11px;padding:11px 4px" data-a="openManageItems">⚙ 管理</button>
 </div>`;
@@ -834,7 +842,6 @@ ${deliveries.length?`<div class="card" style="margin-top:10px">
 </div>`:''}`;
 }
 
-// REPORT
 function repPage(){
   const rv=S.forms.repV||'monthly';
   const months=[...new Set([...S.sals.map(s=>mOf(s.date)),...S.exps.map(e=>mOf(e.date)),nowM()])].filter(Boolean).sort().reverse();
@@ -910,7 +917,7 @@ ${byProd.length?`<div class="card"><div class="sec">產品排行</div>${byProd.m
   <button class="btn bo" style="font-size:12px" data-a="exportNotion">📝 Notion 文字</button>
 </div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-  <button class="btn bsk" style="font-size:12px;background:var(--lemonD);color:#FFF" data-a="exportCSV">📊 完整備份 CSV (包含庫存/寄賣)</button>
+  <button class="btn bsk" style="font-size:12px;background:var(--lemonD);color:#FFF" data-a="exportCSV">📊 完整備份 CSV</button>
   <button class="btn bo" style="font-size:12px" data-a="exportCSVText">📋 備份 CSV 文字</button>
 </div>
 `:rv==='annual'?`
@@ -945,4 +952,427 @@ ${byProd.length?`<div class="card"><div class="sec">產品排行</div>${byProd.m
     <div style="font-size:11px;font-weight:700;color:var(--coral);margin-bottom:8px">成本拆解 A+B</div>
     <div class="rr"><span class="rl">A 固定包材</span><span class="rv">NT$ ${fmtN(S.settings.baseCost||118)}</span></div>
     <div class="rr"><span class="rl">B 精油成本</span><span class="rv">NT$ ${fmtN(ptProd.eoC||0)}</span></div>
-    <div class="rr" style="border:none"><span class="rl" style="font-weight:700">總成本</span><span class="rv" style="font-size:18px;color
+    <div class="rr" style="border:none"><span class="rl" style="font-weight:700">總成本</span><span class="rv" style="font-size:18px;color:var(--coral)">NT$ ${fmtN(ptCost)}</span></div>
+  </div>
+  <div style="background:var(--mintL);border:2px solid var(--mintM);border-radius:12px;padding:14px;margin-bottom:12px">
+    <div style="font-size:11px;font-weight:700;color:var(--mint);margin-bottom:6px">目標毛利 ${fmtP(S.settings.targetMargin)} → 建議售價</div>
+    <div style="font-size:36px;font-weight:800;color:var(--green)">NT$ ${fmtN(ptSuggest)}</div>
+  </div>
+  <div style="background:var(--bdL);border-radius:12px;padding:14px">
+    <div style="font-size:11px;font-weight:700;color:var(--sub);margin-bottom:8px">現行售價 NT$${ptProd.price} 各通路毛利</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(80px,1fr));gap:6px">
+      <div style="text-align:center;padding:8px;background:var(--sf);border-radius:8px;border:2px solid var(--bd)"><div style="font-size:9px;color:var(--muted)">直售</div><div style="font-size:14px;font-weight:800;color:var(--green)">${fmtP(ptProd.price>0?(ptProd.price-ptCost)/ptProd.price:0)}</div><div style="font-size:10px;color:var(--muted)">${fmt(ptProd.price-ptCost)}</div></div>
+      ${getStores().map(st=>{const inc=cIncome(ptProd.price,st+' 寄賣');const pr=inc>0?(inc-ptCost)/inc:0;return`<div style="text-align:center;padding:8px;background:var(--sf);border-radius:8px;border:2px solid var(--bd)"><div style="font-size:9px;color:var(--muted)">${esc(st)}</div><div style="font-size:14px;font-weight:800;color:${pr>=(S.settings.targetMargin||0.5)?'var(--mint)':'var(--coral)'}">${fmtP(pr)}</div><div style="font-size:10px;color:var(--muted)">${fmt(inc-ptCost)}</div></div>`;}).join('')}
+    </div>
+  </div>`:''  }
+</div>`}`;
+}
+
+// MODALS
+function renderModals(){
+  let h='';
+  if(S.modals.backup)h+=backupModal();
+  if(S.modals.settings)h+=settingsModal();
+  if(S.modals.addItem)h+=addItemModal();
+  if(S.modals.manage)h+=manageModal();
+  if(S.modals.send)h+=sendModal();
+  if(S.modals.qkStock)h+=quickModal();
+  if(S.modals.stocktake)h+=stocktakeModal();
+  if(S.modals.repTxt)h+=repTxtModal();
+  if(S.modals.produce)h+=produceModal();
+  return h;
+}
+
+const MH=(t,s='')=>`<div class="mh"><div class="mt">${esc(t)}</div>${s?`<div class="ms">${esc(s)}</div>`:''}</div>`;
+
+function produceModal(){
+  const f=S.forms.produceF||{prodName:S.prods[0]?.name||'',qty:'',items:{}};
+  const prod=S.prods.find(p=>p.name===f.prodName);
+  const qty=parseInt(f.qty)||0;
+  
+  // 優化：多選清單取代固定下拉
+  const mats=S.invItems.filter(i=>i.cat==='原料'||i.cat==='包材');
+  let totalCo2e = 0;
+  mats.forEach(m=>{
+    if(f.items?.[m.id]?.checked) totalCo2e += (m.co2e||0) * (f.items[m.id].useQty||1);
+  });
+
+  return`<div class="overlay" data-a="closeM" data-m="produce"><div class="modal" onclick="event.stopPropagation()">
+${MH('🧪 多選製作 Produce','從材料庫勾選消耗品項')}
+<div class="mb">
+  <div class="f"><label>製作產品</label>
+    <select class="inp" data-b="produceF.prodName">${S.prods.map(p=>`<option value="${esc(p.name)}"${f.prodName===p.name?' selected':''}>${esc(p.name)} (Lv${p.level||1})</option>`).join('')}</select>
+  </div>
+  <div class="f"><label>製作數量（瓶/個）</label>
+    <input class="inp" type="number" min="1" value="${esc(f.qty)}" data-b="produceF.qty" placeholder="0" style="font-size:22px;font-weight:800;text-align:center">
+  </div>
+  <div class="f"><label>勾選本次消耗材料 (自動扣庫存)</label>
+    <div style="max-height:220px;overflow-y:auto;border:2px solid var(--bdL);border-radius:10px;padding:8px;background:var(--bg)">
+    ${mats.map(m=>{
+      const c=f.items?.[m.id]||{checked:false,useQty:1};
+      return`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;background:var(--sf);padding:8px;border-radius:8px;border:1px solid ${c.checked?'var(--coral)':'var(--bdL)'}">
+        <input type="checkbox" ${c.checked?'checked':''} style="width:18px;height:18px" data-a="toggleProduceMat" data-id="${m.id}">
+        <div style="flex:1"><div style="font-size:12px;font-weight:700">${esc(m.name)}</div><div style="font-size:10px;color:var(--muted)">庫存: ${m.qty}${esc(m.unit)}</div></div>
+        ${c.checked?`<input class="inp" type="number" min="0" step="0.1" value="${c.useQty}" style="width:65px;padding:6px;text-align:center" data-b="produceMatQty.${m.id}">`:''}
+      </div>`
+    }).join('')}
+    </div>
+  </div>
+  ${qty>0?`<div style="background:var(--mintL);border:2px solid var(--mintM);border-radius:12px;padding:12px 16px;margin-bottom:12px;text-align:center">
+    <div style="font-size:11px;font-weight:700;color:var(--mint)">產出 Output & 碳足跡</div>
+    <div style="font-size:20px;font-weight:800;color:var(--green)">+${qty} 個 ${esc(prod?.name||'')}</div>
+    <div style="font-size:11px;font-weight:700;color:var(--mint);margin-top:4px">本次估算碳排: ${totalCo2e.toFixed(3)} kgCO2e</div>
+  </div>`:''}
+  <button class="btn bm" data-a="confirmProduce" style="margin-bottom:8px">✓ 確認製作並扣除庫存</button>
+  <button class="btn bo" data-a="closeM" data-m="produce">取消</button>
+</div></div></div>`;
+}
+
+function backupModal(){return`<div class="overlay" data-a="closeM" data-m="backup"><div class="modal" onclick="event.stopPropagation()">
+${MH('備份 / 還原 Backup & Restore')}
+<div class="mb">
+  <div style="background:var(--mintL);border:2px solid var(--mintM);border-radius:14px;padding:16px;margin-bottom:12px">
+    <div style="font-size:13px;font-weight:800;color:var(--mint);margin-bottom:8px">↓ 下載備份 Export</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">把所有資料下載成 JSON，建議每月備份。</div>
+    <button class="btn bm" data-a="exportJSON">下載備份 ↓</button>
+  </div>
+  <div style="background:var(--lemonL);border:2px solid var(--lemonD);border-radius:14px;padding:16px;margin-bottom:14px">
+    <div style="font-size:13px;font-weight:800;color:#8A7000;margin-bottom:8px">↑ 還原備份 Import</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">⚠ 會覆蓋現有資料</div>
+    <label style="display:block;padding:13px;background:var(--lemonD);color:var(--ink);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;text-align:center">選擇備份檔案 ↑<input type="file" accept=".json" style="display:none" data-a="importJSON"></label>
+  </div>
+  <button class="btn bo" data-a="closeM" data-m="backup">關閉</button>
+</div></div></div>`;}
+
+function settingsModal(){
+  const c=S.settings;const stores=getStores();
+  return`<div class="overlay" data-a="closeM" data-m="settings"><div class="modal" onclick="event.stopPropagation()">
+${MH('系統設定 Settings')}
+<div class="mb">
+  <div class="card" style="margin-bottom:12px">
+    <div class="sec">成本設定 <span>Cost</span></div>
+    <div class="f"><label>A 成本：固定包材 (TWD/瓶)</label><input class="inp" type="number" min="0" value="${c.baseCost||118}" data-b="settings.baseCost" style="font-size:18px;font-weight:700"></div>
+    <div class="f"><label>目標毛利率</label><select class="inp" data-b="settings.targetMargin">${[0.40,0.45,0.50,0.55,0.60].map(v=>`<option value="${v}"${c.targetMargin==v?' selected':''}>${fmtP(v)}</option>`).join('')}</select></div>
+  </div>
+  <div class="card" style="margin-bottom:12px">
+    <div class="sec">財務設定 <span>Finance</span></div>
+    <div class="f"><label>公積金比例</label><select class="inp" data-b="settings.reserveRate">${[0.10,0.15,0.20,0.25,0.30].map(v=>`<option value="${v}"${c.reserveRate==v?' selected':''}>${fmtP(v)}</option>`).join('')}</select></div>
+    <div class="f"><label>負責人月薪 (TWD)</label><input class="inp" type="number" min="0" value="${c.salaryAmt||0}" data-b="settings.salaryAmt"></div>
+  </div>
+  <div class="card" style="margin-bottom:12px">
+    <div class="sec">寄賣店管理 <span>Consignment</span></div>
+    <div class="f"><label>對帳頻率</label><select class="inp" data-b="settings.consignFreq"><option value="monthly"${(c.consignFreq||'monthly')==='monthly'?' selected':''}>每月</option><option value="quarterly"${c.consignFreq==='quarterly'?' selected':''}>每季</option></select></div>
+    ${stores.map((store,si)=>`<div style="background:var(--bdL);border-radius:12px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:700">🏪 ${esc(store)}</div>
+        <button class="tbtn tbtn-red" data-a="delConsignStore" data-store="${esc(store)}">${TRASH}</button>
+      </div>
+      <div class="f" style="margin:0"><label style="font-size:10px;color:var(--muted);font-weight:700;display:block;margin-bottom:4px">你拿的比例</label>
+        <select class="inp" style="padding:7px 10px;font-size:12px" data-b="consignRate.${si}">
+          ${[0.60,0.65,0.70,0.75,0.80,0.85,0.90].map(v=>`<option value="${v}"${((c.consign||{})[store+' 寄賣']||0.70)==v?' selected':''}>你拿 ${fmtP(v)}（店抽 ${fmtP(1-v)}）</option>`).join('')}
+        </select>
+      </div>
+    </div>`).join('')}
+    <button class="btn bo" style="font-size:12px;margin-bottom:4px" data-a="addConsignStore">＋ 新增寄賣店</button>
+  </div>
+  <div class="card" style="margin-bottom:12px">
+    <div class="sec">產品規格 <span>ml/瓶</span></div>
+    ${(c.productSpecs||[]).map((sp,si)=>{
+      return `<div style="background:var(--bdL);border-radius:12px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <input value="${esc(sp.name)}" placeholder="規格名稱" style="font-size:13px;font-weight:700;border:2px solid var(--bd);background:var(--sf);color:var(--ink);font-family:inherit;flex:1;padding:6px 10px;border-radius:8px" data-b="prodSpec.${si}.name">
+        <button class="tbtn tbtn-red" data-a="delProdSpec" data-idx="${si}">${TRASH}</button>
+      </div>
+      <div style="font-size:10px;color:var(--muted);font-weight:700;margin-bottom:6px">每瓶用量設定（用於計算可生產數量）</div>
+      <div style="margin-bottom:6px">
+        <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">主要液體（如：基底液 / 蠟）</label>
+        <div style="display:flex;gap:6px">
+          <input class="inp" type="text" placeholder="輸入主要液體名稱" value="${esc(sp.baseItem||'')}" style="flex:2;padding:7px 10px;font-size:12px" data-b="prodSpec.${si}.baseItem">
+          <input class="inp" type="number" min="0" value="${sp.base||0}" data-b="prodSpec.${si}.base" placeholder="ml" style="flex:1;padding:7px 10px;font-size:12px;text-align:center">
+        </div>
+      </div>
+      <div style="margin-bottom:6px">
+        <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">香味原料（如：精油 / 香精）</label>
+        <div style="display:flex;gap:6px">
+          <input class="inp" type="text" placeholder="輸入香味原料名稱" value="${esc(sp.eoItem||'')}" style="flex:2;padding:7px 10px;font-size:12px" data-b="prodSpec.${si}.eoItem">
+          <input class="inp" type="number" min="0" value="${sp.eo||0}" data-b="prodSpec.${si}.eo" placeholder="ml" style="flex:1;padding:7px 10px;font-size:12px;text-align:center">
+        </div>
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">纖維棒/燈芯數量（每瓶幾支）</label>
+        <input class="inp" type="number" min="0" value="${sp.fiber||0}" data-b="prodSpec.${si}.fiber" placeholder="6" style="padding:7px 10px;font-size:12px;text-align:center;width:100%;box-sizing:border-box">
+      </div>
+    </div>`}).join('')}
+    <button class="btn bo" style="font-size:12px" data-a="addProdSpec">＋ 新增規格</button>
+  </div>
+  <div class="card" style="margin-bottom:12px">
+    <div class="sec">支出類別管理 <span>Expense Categories</span></div>
+    ${S.expCats.map((cat,i)=>`<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <input value="${esc(cat)}" style="flex:1;padding:8px 10px;border:2px solid var(--bd);border-radius:8px;font-size:13px;font-family:inherit" data-b="expCat.${i}">
+      <button class="tbtn tbtn-red" data-a="delExpCat" data-i="${i}">${TRASH}</button>
+    </div>`).join('')}
+    ${S.forms.showAddCat?`<div style="display:flex;gap:6px;margin-bottom:6px">
+      <input id="newCatName" class="inp" placeholder="類別名稱" value="${esc(S.forms.newCatName||'')}" data-b="newCatName" style="flex:1">
+      <button class="btn bm" style="width:auto;padding:11px 14px;font-size:12px" data-a="confirmAddExpCat">確認</button>
+      <button class="btn bo" style="width:auto;padding:11px 14px;font-size:12px" data-a="cancelAddCat">取消</button>
+    </div>`:`<button class="btn bo" style="font-size:12px;margin-bottom:6px" data-a="addExpCatSettings">＋ 新增類別</button>`}
+    <button class="btn bc" data-a="saveExpCats">儲存類別 ✓</button>
+  </div>
+  <div class="card" style="margin-bottom:12px">
+    <div class="sec">入帳通路管理 <span>Sales Channels</span></div>
+    ${S.channels.map((ch,i)=>`<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+      <input value="${esc(ch)}" style="flex:1;padding:8px 10px;border:2px solid var(--bd);border-radius:8px;font-size:13px;font-family:inherit" data-b="channel.${i}">
+      <button class="tbtn tbtn-red" data-a="delChannel" data-i="${i}">${TRASH}</button>
+    </div>`).join('')}
+    ${S.forms.showAddChannel?`<div style="display:flex;gap:6px;margin-bottom:6px">
+      <input id="newChannelName" class="inp" placeholder="通路名稱" value="${esc(S.forms.newChannelName||'')}" data-b="newChannelName" style="flex:1">
+      <button class="btn bm" style="width:auto;padding:11px 14px;font-size:12px" data-a="confirmAddChannel">確認</button>
+      <button class="btn bo" style="width:auto;padding:11px 14px;font-size:12px" data-a="cancelAddChannel">取消</button>
+    </div>`:`<button class="btn bo" style="font-size:12px;margin-bottom:6px" data-a="addChannelSettings">＋ 新增通路</button>`}
+    <button class="btn bc" data-a="saveChannels">儲存通路 ✓</button>
+  </div>
+  <div class="card" style="margin-bottom:12px">
+    <div class="sec">產品 B精油成本 <span>Products</span></div>
+    ${S.prods.map((p,i)=>`<div style="padding:10px 0;border-bottom:1px solid var(--bdL)" id="prod_row_${i}">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <input value="${esc(p.name)}" placeholder="品名" style="flex:1;padding:7px 10px;border:2px solid var(--bd);border-radius:8px;font-size:13px;font-weight:700;font-family:inherit" data-b="prod.${i}.name">
+        <select style="padding:7px 8px;border:2px solid var(--bd);border-radius:8px;font-size:11px;font-family:inherit;font-weight:700" data-b="prod.${i}.level">
+          <option value="1"${(p.level||1)==1?' selected':''}>Lv1</option>
+          <option value="2"${p.level==2?' selected':''}>Lv2</option>
+        </select>
+        <button class="tbtn tbtn-red" data-a="delProd" data-i="${i}">${TRASH}</button>
+      </div>
+      <input value="${esc(p.en||'')}" placeholder="English" style="width:100%;padding:6px 8px;border:2px solid var(--bdL);border-radius:6px;font-size:11px;font-family:inherit;margin-bottom:5px;box-sizing:border-box" data-b="prod.${i}.en">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+        <div><div style="font-size:9px;color:var(--muted);font-weight:700;margin-bottom:3px">售價 NT$</div><input type="number" value="${p.price||0}" style="width:100%;padding:6px 8px;border:2px solid var(--bdL);border-radius:6px;font-size:12px;font-weight:700;font-family:inherit;text-align:center;box-sizing:border-box" data-b="prod.${i}.price"></div>
+        <div><div style="font-size:9px;color:var(--muted);font-weight:700;margin-bottom:3px">精油B</div><input type="number" value="${p.eoC||0}" step="0.01" style="width:100%;padding:6px 8px;border:2px solid var(--bdL);border-radius:6px;font-size:12px;font-weight:700;font-family:inherit;text-align:center;box-sizing:border-box" data-b="prod.${i}.eoC"></div>
+        <div><div style="font-size:9px;color:var(--muted);font-weight:700;margin-bottom:3px">總成本</div><input type="number" value="${(S.settings.baseCost||118)+(p.eoC||0)}" step="0.01" style="width:100%;padding:6px 8px;border:2px solid var(--coralM);background:var(--coralL);border-radius:6px;font-size:12px;font-weight:700;font-family:inherit;text-align:center;color:var(--coral);box-sizing:border-box" data-b="prodTotal.${i}"></div>
+      </div>
+      <div style="font-size:9px;color:var(--muted);margin-top:3px">總成本 = A固定包材 NT$${S.settings.baseCost||118} + B精油</div>
+    </div>`).join('')}
+    <button class="btn bo" style="margin-bottom:8px;font-size:12px" data-a="addProd">＋ 新增品項</button>
+    <button class="btn bc" data-a="saveProds">儲存產品 ✓</button>
+  </div>
+  <div class="card" style="margin-bottom:12px">
+    <div class="sec">匯率 <span>Exchange Rates</span></div>
+    ${getCurs().filter(cur=>cur.code!=='TWD').map((cur,i)=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <div style="font-size:18px">${cur.flag}</div>
+      <div style="flex:1"><div style="font-size:13px;font-weight:700">${cur.code}</div><div style="font-size:10px;color:var(--muted)">1 ${cur.code} = ? TWD</div></div>
+      <input type="number" step="0.001" value="${cur.rate}" style="width:75px;padding:7px 8px;border:2px solid var(--bd);border-radius:8px;font-size:14px;font-weight:700;text-align:center;font-family:inherit" data-b="currency.${cur.code}">
+    </div>`).join('')}
+    <button class="btn bc" style="margin-bottom:6px" data-a="saveCurrencies">更新匯率 ✓</button>
+    ${S.forms.showAddCurrency?`<div style="background:var(--bdL);border-radius:10px;padding:12px;margin-bottom:6px">
+      <div style="font-size:12px;font-weight:700;margin-bottom:8px">新增幣值</div>
+      <div class="g2i" style="margin-bottom:8px">
+        <input class="inp" placeholder="代碼 如:JPY" value="${esc((S.forms.newCurrencyData||{}).code||'')}" data-b="newCurrency.code" style="font-size:12px;padding:8px 10px">
+        <input class="inp" placeholder="名稱 如:日幣" value="${esc((S.forms.newCurrencyData||{}).name||'')}" data-b="newCurrency.name" style="font-size:12px;padding:8px 10px">
+      </div>
+      <div class="g2i" style="margin-bottom:8px">
+        <input class="inp" type="number" step="0.001" placeholder="匯率 vs TWD" value="${esc((S.forms.newCurrencyData||{}).rate||'')}" data-b="newCurrency.rate" style="font-size:12px;padding:8px 10px">
+        <input class="inp" placeholder="符號 ¥/$" value="${esc((S.forms.newCurrencyData||{}).symbol||'')}" data-b="newCurrency.symbol" style="font-size:12px;padding:8px 10px">
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn bm" style="flex:1;font-size:12px;padding:10px" data-a="confirmAddCurrency">確認</button>
+        <button class="btn bo" style="flex:1;font-size:12px;padding:10px" data-a="cancelAddCurrency">取消</button>
+      </div>
+    </div>`:`<button class="btn bo" style="font-size:12px" data-a="addCurrency">＋ 新增幣值</button>`}
+  </div>
+  <button class="btn bc" style="margin-bottom:8px" data-a="saveSettings">儲存所有設定 ✓</button>
+  <button class="btn bo" data-a="closeM" data-m="settings">關閉</button>
+</div></div></div>`;}
+
+function addItemModal(){
+  const f=S.forms.newItem||{name:'',en:'',cat:'包材',unit:'個',qty:0,safe:10,unitCost:0,co2e:0};
+  return`<div class="overlay" data-a="closeM" data-m="addItem" style="z-index:300"><div class="modal" onclick="event.stopPropagation()">
+${MH('新增庫存品項 Add Item')}
+<div class="mb">
+  <div class="f"><label>中文品名</label><input class="inp" value="${esc(f.name)}" data-b="newItem.name" placeholder="如：白色擴香瓶"></div>
+  <div class="f"><label>英文品名（選填）</label><input class="inp" value="${esc(f.en||'')}" data-b="newItem.en" placeholder="e.g. White Bottle"></div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">類別</label>
+      <select class="inp" data-b="newItem.cat"><option>原料</option><option${f.cat==='包材'?' selected':''}>包材</option><option${f.cat==='成品'?' selected':''}>成品</option><option${f.cat==='其他'?' selected':''}>其他</option></select>
+    </div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">單位</label><input class="inp" value="${esc(f.unit)}" data-b="newItem.unit" placeholder="個/ml/支"></div>
+  </div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">初始數量</label><input class="inp" type="number" min="0" value="${f.qty||0}" data-b="newItem.qty"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">安全庫存</label><input class="inp" type="number" min="0" value="${f.safe||10}" data-b="newItem.safe"></div>
+  </div>
+  <div class="f"><label>進貨單價（選填）</label><input class="inp" type="number" min="0" value="${f.unitCost||0}" data-b="newItem.unitCost" placeholder="0"></div>
+  <div class="f"><label>碳係數 (kgCO2e/單位)</label><input class="inp" type="number" step="0.001" value="${f.co2e||0}" data-b="newItem.co2e" placeholder="0"></div>
+  <button class="btn bc" data-a="confirmAddItem" style="margin-bottom:8px">新增 ✓</button>
+  <button class="btn bo" data-a="closeM" data-m="addItem">取消</button>
+</div></div></div>`;}
+
+function manageModal(){
+  return`<div class="overlay" data-a="closeM" data-m="manage"><div class="modal" onclick="event.stopPropagation()">
+${MH('管理品項 Manage Items','直接修改後按儲存')}
+<div class="mb">
+  <div style="background:var(--lemonL);border:2px solid var(--lemonD);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#7A6000;font-weight:600">💡 直接點欄位修改，改完按「儲存全部」。可在下方新增品項。</div>
+  ${S.invItems.map((item,idx)=>`<div style="padding:12px 0;border-bottom:1px solid var(--bdL)">
+    <div style="display:flex;gap:5px;margin-bottom:5px;align-items:center">
+      <select style="padding:3px 8px;border:2px solid var(--bdL);border-radius:8px;font-size:10px;font-family:inherit;font-weight:700" data-b="invItem.${idx}.cat">
+        <option${item.cat==='原料'?' selected':''}>原料</option>
+        <option${item.cat==='包材'?' selected':''}>包材</option>
+        <option${item.cat==='成品'?' selected':''}>成品</option>
+        <option${item.cat==='其他'?' selected':''}>其他</option>
+      </select>
+      <span class="pill py" style="font-size:9px">現有 ${item.qty}${esc(item.unit)}</span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
+      <input value="${esc(item.name)}" style="flex:1;padding:8px 10px;border:2px solid var(--bd);border-radius:8px;font-size:13px;font-weight:700;font-family:inherit" data-b="invItem.${idx}.name">
+      <button class="tbtn tbtn-red" data-a="delItem" data-id="${item.id}">${TRASH}</button>
+    </div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:5px">
+      <input value="${esc(item.en||'')}" placeholder="English" style="padding:6px 8px;border:2px solid var(--bdL);border-radius:6px;font-size:11px;font-family:inherit" data-b="invItem.${idx}.en">
+      <input value="${esc(item.unit)}" placeholder="單位" style="padding:6px 8px;border:2px solid var(--bdL);border-radius:6px;font-size:11px;font-family:inherit;text-align:center" data-b="invItem.${idx}.unit">
+      <input type="number" value="${item.safe}" placeholder="安全庫存" style="padding:6px 8px;border:2px solid var(--bdL);border-radius:6px;font-size:11px;font-family:inherit;text-align:center" data-b="invItem.${idx}.safe">
+    </div>
+    <div style="display:flex;gap:5px;margin-top:5px;align-items:center">
+      <span style="font-size:10px;color:var(--muted)">單價</span>
+      <input type="number" value="${item.unitCost||0}" step="0.01" placeholder="0" style="flex:1;padding:6px 8px;border:2px solid var(--bdL);border-radius:6px;font-size:11px;font-family:inherit" data-b="invItem.${idx}.unitCost">
+      <span style="font-size:10px;color:var(--muted)">碳排</span>
+      <input type="number" value="${item.co2e||0}" step="0.001" placeholder="0" style="flex:1;padding:6px 8px;border:2px solid var(--bdL);border-radius:6px;font-size:11px;font-family:inherit" data-b="invItem.${idx}.co2e">
+    </div>
+  </div>`).join('')}
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;margin-bottom:8px">
+    <button class="btn bc" data-a="saveInvNames">儲存全部 ✓</button>
+    <button class="btn bm" data-a="openAddItem">＋ 新增品項</button>
+  </div>
+  <button class="btn bo" data-a="closeM" data-m="manage">關閉</button>
+</div></div></div>`;}
+
+function sendModal(){
+  const store=S.modals.sendStore||getStores()[0]||'moonstone';
+  const f=S.forms.sendF||{date:toDay(),store,prodName:'',qty:'',note:''};
+  return`<div class="overlay" data-a="closeM" data-m="send"><div class="modal" onclick="event.stopPropagation()">
+${MH(`送貨到店 ${store}`)}
+<div class="mb">
+  <div class="f"><label>日期 Date</label><input class="inp" type="date" value="${esc(f.date||toDay())}" data-b="sendF.date"></div>
+  <div class="f"><label>寄賣店</label><select class="inp" data-b="sendF.store">${getStores().map(s=>`<option${f.store===s?' selected':''}>${esc(s)}</option>`).join('')}</select></div>
+  <div class="f"><label>產品</label><select class="inp" data-b="sendF.prodName"><option value="">選擇產品...</option>${S.prods.map(p=>`<option value="${esc(p.name)}"${f.prodName===p.name?' selected':''}>${esc(p.name)} ${esc(p.en||'')} (Lv${p.level||1})</option>`).join('')}</select></div>
+  <div class="f"><label>數量（瓶）</label><input class="inp" type="number" min="1" value="${esc(f.qty)}" data-b="sendF.qty" placeholder="0"></div>
+  <div class="f"><label>備註（選填）</label><input class="inp" value="${esc(f.note||'')}" data-b="sendF.note" placeholder="備註..."></div>
+  <button class="btn bc" data-a="confirmSend" style="margin-bottom:8px">確認送出 ✓</button>
+  <button class="btn bo" data-a="closeM" data-m="send">取消</button>
+</div></div></div>`;}
+
+function quickModal(){
+  const{id,type}=S.modals.qkData||{};
+  const item=S.invItems.find(i=>i.id===id);if(!item)return '';
+  const f=S.forms.qkF||{qty:'',unitCost:'',note:''};
+  const isIn=type==='in';
+  return`<div class="overlay" data-a="closeM" data-m="qkStock"><div class="modal" onclick="event.stopPropagation()">
+${MH(isIn?`進貨 ${item.name}`:`出庫 ${item.name}`,`現有 ${item.qty} ${item.unit}`)}
+<div class="mb">
+  <div class="f"><label>數量 (${esc(item.unit)})</label><input class="inp" type="number" min="1" value="${esc(f.qty)}" data-b="qkF.qty" placeholder="0" style="font-size:22px;font-weight:800;text-align:center"></div>
+  ${isIn?`<div class="f"><label>進貨單價（選填）</label><input class="inp" type="number" min="0" value="${esc(f.unitCost||item.unitCost||'')}" data-b="qkF.unitCost" placeholder="0"></div>`:''}
+  <div class="f"><label>備註</label><input class="inp" value="${esc(f.note||'')}" data-b="qkF.note"></div>
+  <button class="btn ${isIn?'bm':'bc'}" data-a="confirmQk" style="margin-bottom:8px">${isIn?'＋ 加入庫存':'－ 扣除庫存'}</button>
+  <button class="btn bo" data-a="closeM" data-m="qkStock">取消</button>
+</div></div></div>`;}
+
+function stocktakeModal(){
+  return`<div class="overlay" data-a="closeM" data-m="stocktake"><div class="modal" onclick="event.stopPropagation()">
+${MH('快速盤點 Stocktake','直接輸入現有數量')}
+<div class="mb">
+  <div style="background:var(--lemonL);border:2px solid var(--lemonD);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#7A6000;font-weight:600">💡 直接填入現有數量。可用下方按鈕新增或刪除品項。</div>
+  ${S.invItems.map(item=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--bdL)">
+    <div style="flex:1"><div style="font-size:13px;font-weight:700">${esc(item.name)}</div><div style="font-size:10px;color:var(--muted)">${esc(item.cat)} · ${esc(item.unit)}</div></div>
+    <input type="number" min="0" value="${item.qty}" style="width:75px;padding:8px 10px;border:2px solid var(--bd);border-radius:8px;font-size:16px;font-weight:700;text-align:center;font-family:inherit" data-stk="${item.id}">
+    <span style="font-size:11px;color:var(--muted)">${esc(item.unit)}</span>
+    <button class="tbtn tbtn-red" data-a="delItemFromStocktake" data-id="${item.id}">${TRASH}</button>
+  </div>`).join('')}
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;margin-bottom:8px">
+    <button class="btn bm" data-a="confirmStocktake">儲存盤點 ✓</button>
+    <button class="btn bo" data-a="openAddItem">＋ 新增品項</button>
+  </div>
+  <button class="btn bo" data-a="closeM" data-m="stocktake">關閉</button>
+</div></div></div>`;}
+
+function repTxtModal(){return`<div class="overlay" data-a="closeM" data-m="repTxt"><div class="modal" onclick="event.stopPropagation()">
+${MH('報表文字','複製後貼到 Notion / Line')}
+<div class="mb">
+  <textarea readonly style="width:100%;padding:14px;background:var(--bg);border:2px solid var(--bd);border-radius:10px;font-size:12px;font-family:monospace;color:var(--ink);line-height:1.75;resize:vertical;min-height:280px;box-sizing:border-box">${esc(S.forms.repTxt||'')}</textarea>
+  <button class="btn bc" style="margin-top:10px" data-a="copyRepTxt">複製 Copy ✓</button>
+  <button class="btn bo" style="margin-top:8px" data-a="closeM" data-m="repTxt">關閉</button>
+</div></div></div>`;}
+
+// BINDING & ACTIONS
+function bindAll(){
+  document.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click',()=>{S.tab=el.dataset.tab;re();}));
+  document.querySelectorAll('[data-b]').forEach(el=>{
+    el.addEventListener('input',()=>bind(el.dataset.b,el.value));
+    el.addEventListener('change',()=>bind(el.dataset.b,el.value));
+  });
+  document.querySelectorAll('[data-a]').forEach(el=>{
+    if(el.tagName==='INPUT'&&el.type==='file'){el.addEventListener('change',()=>{if(el.files[0])importJSON(el.files[0]);});return;}
+    el.addEventListener('click',e=>{e.stopPropagation();act(el.dataset.a,el.dataset);});
+  });
+  initDrag();
+}
+
+function bind(path,val){
+  const p=path.split('.');
+  if(p[0]==='sal'){if(!S.forms.sal)S.forms.sal={date:toDay(),prodIdx:0,qty:1,channel:S.channels.find(c=>!c.includes('寄賣'))||S.channels[0]};S.forms.sal[p[1]]=p[1]==='prodIdx'?parseInt(val):val;if(p[1]==='qty'||p[1]==='prodIdx')re();}
+  else if(p[0]==='salC'){if(!S.forms.salC)S.forms.salC={date:toDay(),prodIdx:0,qty:1};S.forms.salC[p[1]]=p[1]==='prodIdx'?parseInt(val):val;if(p[1]==='prodIdx')re();}
+  else if(p[0]==='exp'){if(!S.forms.exp)S.forms.exp={date:toDay(),category:S.expCats[0],description:'',amount:'',currency:'TWD',origin:'',payMethod:PAY[0],supplier:'',note:''};S.forms.exp[p[1]]=val;if(p[1]==='currency')re();}
+  else if(p[0]==='invF'){if(!S.forms.invF)S.forms.invF={date:toDay(),itemId:'',type:'in',qty:'',currency:'TWD',unitCost:'',store:'',note:''};S.forms.invF[p[1]]=val;if(p[1]==='type'||p[1]==='currency')re();}
+  else if(p[0]==='customF'){if(!S.forms.customF)S.forms.customF={date:toDay(),customerName:'',product:'',totalAmt:'',depositAmt:'',depositDate:toDay(),status:'pending',note:'',customCost:'',isConsign:false,consignStore:getStores()[0]||'moonstone',consignRate:0.70};S.forms.customF[p[1]]=val;if(p[1]==='isConsign')re();}
+  else if(p[0]==='newItem'){if(!S.forms.newItem)S.forms.newItem={name:'',en:'',cat:'包材',unit:'個',qty:0,safe:10,unitCost:0,co2e:0};S.forms.newItem[p[1]]=val;}
+  else if(p[0]==='sendF'){if(!S.forms.sendF)S.forms.sendF={date:toDay(),store:getStores()[0]||'moonstone',prodName:'',qty:'',note:''};S.forms.sendF[p[1]]=val;}
+  else if(p[0]==='qkF'){if(!S.forms.qkF)S.forms.qkF={qty:'',unitCost:'',note:''};S.forms.qkF[p[1]]=val;}
+  else if(p[0]==='produceF'){if(!S.forms.produceF)S.forms.produceF={prodName:S.prods[0]?.name||'',qty:'',items:{}};S.forms.produceF[p[1]]=val;if(p[1]==='prodName')re();}
+  else if(p[0]==='produceMatQty'){if(!S.forms.produceF)return;if(!S.forms.produceF.items[p[1]])S.forms.produceF.items[p[1]]={checked:false,useQty:1};S.forms.produceF.items[p[1]].useQty=parseFloat(val)||0;re();}
+  else if(p[0]==='repM'){S.forms.repM=val;re();}
+  else if(p[0]==='repY'){S.forms.repY=val;re();}
+  else if(p[0]==='ptIdx'){S.forms.ptIdx=parseInt(val);re();}
+  else if(p[0]==='editExp'&&p.length===3){if(S.forms['editExp_'+p[1]])S.forms['editExp_'+p[1]][p[2]]=val;}
+  else if(p[0]==='editSal'&&p.length===3){if(S.forms['editSal_'+p[1]])S.forms['editSal_'+p[1]][p[2]]=val;}
+  else if(p[0]==='invItem'&&p.length===3){const i=parseInt(p[1]);if(S.invItems[i])S.invItems[i][p[2]]=p[2]==='safe'?parseInt(val)||0:p[2]==='unitCost'||p[2]==='co2e'?parseFloat(val)||0:val;}
+  else if(p[0]==='settings'){
+    const fv=parseFloat(val)||0;
+    if(['reserveRate','salaryAmt','baseCost','targetMargin'].includes(p[1]))S.settings[p[1]]=fv;
+    else if(p[1]==='consignFreq')S.settings.consignFreq=val;
+  }
+  else if(p[0]==='consignRate'){const stores=getStores();const si=parseInt(p[1]);if(!S.settings.consign)S.settings.consign={...DEF_CONSIGN};if(stores[si])S.settings.consign[stores[si]+' 寄賣']=parseFloat(val)||0.70;}
+  else if(p[0]==='prodSpec'){if(!S.settings.productSpecs)S.settings.productSpecs=[{name:'擴香瓶',baseItem:'',base:104,eoItem:'',eo:26,fiber:6}];const si=parseInt(p[1]);if(S.settings.productSpecs[si])S.settings.productSpecs[si][p[2]]=(p[2]==='base'||p[2]==='eo'||p[2]==='fiber')?parseFloat(val)||0:val;}
+  else if(p[0]==='currency'){const idx=getCurs().findIndex(c=>c.code===p[1]);if(idx>=0)S.settings.currencies[idx].rate=parseFloat(val)||1;}
+  else if(p[0]==='expCat'){const i=parseInt(p[1]);if(S.expCats[i]!==undefined)S.expCats[i]=val;}
+  else if(p[0]==='channel'){const i=parseInt(p[1]);if(S.channels[i]!==undefined)S.channels[i]=val;}
+  else if(p[0]==='newStoreName'){S.forms.newStoreName=val;}
+  else if(p[0]==='newCatName'){S.forms.newCatName=val;}
+  else if(p[0]==='newChannelName'){S.forms.newChannelName=val;}
+  else if(p[0]==='newCurrency'&&p.length===2){if(!S.forms.newCurrencyData)S.forms.newCurrencyData={};S.forms.newCurrencyData[p[1]]=val;}
+  else if(p[0]==='newProdSpec'&&p.length===2){if(!S.forms.newProdSpecData)S.forms.newProdSpecData={name:'',baseItem:'',base:0,eoItem:'',eo:0,fiber:6};S.forms.newProdSpecData[p[1]]=p[1]==='base'||p[1]==='eo'||p[1]==='fiber'?parseFloat(val)||0:val;}
+  else if(p[0]==='prod'&&p.length===3){const i=parseInt(p[1]);if(S.prods[i])S.prods[i][p[2]]=p[2]==='price'||p[2]==='eoC'?parseFloat(val)||0:p[2]==='level'?parseInt(val)||1:val;}
+  else if(p[0]==='prodTotal'){const i=parseInt(p[1]);const total=parseFloat(val)||0;const base=S.settings.baseCost||118;if(S.prods[i])S.prods[i].eoC=Math.max(0,total-base);}
+}
+
+async function act(a,d){
+  if(a==='openBackup'){S.modals.backup=true;re();}
+  else if(a==='openSettings'){S.modals.settings=true;re();}
+  else if(a==='closeM'){delete S.modals[d.m];re();}
+  else if(a==='setSalV'){S.forms.salV=d.v;re();}
+  else if(a==='setConsignSaleStore'){S.forms.salConsignStore=d.v;S.forms.salC={date:toDay(),prodIdx:0,qty:1};re();}
+  else if(a==='setInvV'){S.forms.invV=d.v;re();}
+  else if(a==='setInvCat'){S.forms.invCat=d.v;re();}
+  else if(a==='setStoreV'){S.forms.storeV=d.v;re();}
+  else if(a==='setRepV'){S.forms.repV=d.v;re();}
+  else if(a==='toggleSalForm'){S.forms.salOpen=!(S.forms.salOpen!==false);re();}
+  else if(a==='toggleSalCForm'){S.forms.salCOpen=!(S.forms.salCOpen!==false);re();}
+  else if(a==='toggleExpForm'){S.forms.expOpen=!(S.forms.expOpen!==false);re();}
+  else if(a==='toggleInvTx'){S.forms.invTxOpen=!(S.forms.invTxOpen!==false);re();}
+  else if(a==='toggleCustomForm'){S.forms.customOpen=!(S.forms.customOpen!==false);re();}
+  else if(a==='toggleCustomConsign'){if(!S.forms.customF)S.forms.customF={date:toDay(),customerName:'',product:'',totalAmt:'',depositAmt:'',depositDate:toDay(),status:'pending',note:'',customCost:'',isConsign:false,consignStore:getStores()[0]||'moonstone',consignRate:0.70};S.forms.customF.isConsign=!S.forms.customF.isConsign;re();}
+  else if(a==='selProd'){if(!S.forms.sal)S.forms.sal={date:toDay(),prodIdx:0,qty:1,channel:S.channels.find(c=>!c.includes('寄賣'))||S.channels[0]};S.forms.sal.prodIdx=parseInt(d.idx);re();}
+  else if(a==='selProdC'){if(!S.forms.salC)S.forms.salC={date:toDay(),prodIdx:0,qty:1};S.forms.salC.prodIdx=parseInt(d.idx);re();}
+  else if(a==='setExpCat'){if(!S.forms.exp)S.forms.exp={date:toDay(),category:d.v,description:'',amount:'',currency:'TWD',origin:'',payMethod:PAY[0],supplier:'',note:''};S.forms.exp.category=d.v;re();}
+  else if(a==='addExpCat'){const nc=prompt('新增類別：');if(nc?.trim()&&!S.expCats.includes(nc.trim())){S.expCats=[...S.expCats,nc.trim()];await saveA('expCats',S.expCats);if(S.forms.exp)S.forms.exp.category=nc.trim();re();}}
+  else if(a==='addChannel'){const nc=prompt('新增通路：');if(nc?.trim()&&!S.channels.includes(nc.trim())){S.channels=[...S.channels,nc.trim()];await saveA('channels',S.channels);re();}}
+  else if(a==='setPay'){if(!S.forms.exp)S.forms.exp={date:toDay(),category:S.expCats[0],description:'',amount:'',currency:'TWD',origin:'',payMethod:PAY[0],supplier:'',note:''};S.forms.exp.payMethod=d.v;re();}
+  else if(a==='editExp'){S.forms['editExp_'+d.id]={...S.exps.find(e=>e.id===d.id)};re();}
+  else if(a==='editSal'){S.forms['editSal_'+d.id]={...S.sals.find(s=>s.id===d.id)};re();}
+  else if(a==='cancelEdit'){delete S.forms[d.k];re();}
+  else if(a==='setEditExpCat'){if(S.forms['editExp_'+d.id])S.forms['editExp_'+d.id].category=d.v;re();}
+  else if(a==='openAddItem'){S.modals.addItem=true;S.forms.newItem={
