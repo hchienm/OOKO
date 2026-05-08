@@ -209,4 +209,740 @@ const S={tab:'dash',exps:[],sals:[],prods:[...DEF_PRODS],customOrders:[],consign
   expCats:['材料','研發','行銷','物流','其他'],
   modals:{},forms:{},confirms:{},toast:null,_tt:null};
 
-const fmt
+const fmt=n=>'$'+Math.round(n||0).toLocaleString();
+const fmtN=n=>Math.round(n||0).toLocaleString();
+const fmtP=n=>Math.round((n||0)*100)+'%';
+const toDay=()=>new Date().toISOString().slice(0,10);
+const mOf=d=>(d||'').slice(0,7);
+const nowM=()=>new Date().toISOString().slice(0,7);
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const getCurs=()=>S.settings.currencies||DEF_SETTINGS.currencies;
+const getCur=code=>getCurs().find(c=>c.code===code)||getCurs()[0];
+const toTWD=(amt,code)=>Math.round((parseFloat(amt)||0)*((getCur(code)||{rate:1}).rate)*100)/100;
+const prodCost=p=>(S.settings.baseCost||118)+(p.eoC||0);
+const getStores=()=>S.settings.consignStores||DEF_STORES;
+const cRate=ch=>(S.settings.consign||DEF_CONSIGN)[ch]||1;
+const cIncome=(price,ch)=>Math.round(price*cRate(ch));
+
+function findProdInvItem(prodName){
+  return S.invItems.find(i=>i.cat==='成品'&&i.name===prodName);
+}
+
+async function deductFinishedStock(prodName,qty){
+  const item=findProdInvItem(prodName);
+  if(!item){return{ok:false,msg:'找不到成品庫存「'+prodName+'」'};}
+  const before=item.qty;
+  item.qty=Math.max(0,item.qty-qty);
+  await saveA('inv_items',S.invItems);
+  if(before<qty)return{ok:true,warn:true,msg:'⚠ 庫存不足！「'+prodName+'」只有 '+before+' 瓶，已扣為 0'};
+  return{ok:true,warn:false};
+}
+async function restoreFinishedStock(prodName,qty){
+  const item=findProdInvItem(prodName);
+  if(!item)return false;
+  item.qty+=qty;
+  await saveA('inv_items',S.invItems);
+  return true;
+}
+
+function showToast(msg){if(S._tt)clearTimeout(S._tt);S.toast=msg;re();S._tt=setTimeout(()=>{S.toast=null;re();},2400);}
+function render(){document.getElementById('app').innerHTML=layout();bindAll();}
+function re(){render();}
+
+const TABS=[
+  {id:'dash',zh:'總覽',en:'Overview',svg:'<path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>'},
+  {id:'sal',zh:'銷售',en:'Sales',svg:'<path d="M5 10l7-7m0 0l7 7M12 3v18"/>'},
+  {id:'exp',zh:'支出',en:'Expense',svg:'<path d="M19 14l-7 7m0 0l-7-7m7 7V3"/>'},
+  {id:'inv',zh:'庫存',en:'Stock',svg:'<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/>'},
+  {id:'rep',zh:'報表',en:'Report',svg:'<path d="M9 17v-2m3 2v-4m3 4v-6"/><rect x="3" y="4" width="18" height="16" rx="2"/>'},
+];
+
+function layout(){
+  const cur=TABS.find(t=>t.id===S.tab)||TABS[0];
+  return`<div class="hdr"><div style="font-size:8px;letter-spacing:.26em;color:var(--sub);opacity:.6;font-family:Georgia,serif;margin-bottom:3px">✦ HANDCRAFTED FRAGRANCE ✦</div>
+  <div class="hdr-row"><div><div style="font-family:Georgia,serif;font-size:22px;letter-spacing:.16em">OOKO</div>
+    <div style="font-size:12px;color:var(--sub);margin-top:1px">${esc(cur.zh)}<span style="font-size:10px;opacity:.6;margin-left:5px">${esc(cur.en)}</span></div>
+  </div>
+  <div style="display:flex;gap:6px">
+    <button style="background:rgba(34,16,42,.1);border:1px solid rgba(34,16,42,.15);border-radius:16px;padding:6px 12px;font-size:11px;cursor:pointer" data-a="openSettings">⚙ 設定</button>
+    <button style="background:rgba(34,16,42,.1);border:1px solid rgba(34,16,42,.15);border-radius:16px;padding:6px 12px;font-size:11px;cursor:pointer" data-a="openBackup">備份</button>
+  </div></div></div>
+<div class="pg">${page()}</div>
+<nav class="nav">${TABS.map(t=>`<button class="nav-item${S.tab===t.id?' active':''}" data-tab="${t.id}"><svg viewBox="0 0 24 24">${t.svg}</svg><span>${t.zh}</span><div class="nav-dot"></div></button>`).join('')}</nav>
+${S.toast?`<div class="toast">${esc(S.toast)}</div>`:''}
+${renderModals()}`;
+}
+function page(){
+  if(S.tab==='dash')return dashPage();
+  if(S.tab==='sal')return salPage();
+  if(S.tab==='exp')return expPage();
+  if(S.tab==='inv')return invPage();
+  if(S.tab==='rep')return repPage();
+  return'';
+}
+
+function dashPage(){
+  const cm=nowM();
+  const mS=S.sals.filter(s=>mOf(s.date)===cm);
+  const mE=S.exps.filter(e=>mOf(e.date)===cm);
+  const directSals=mS.filter(s=>!s.channel?.includes('寄賣'));
+  const consignSals=mS.filter(s=>s.channel?.includes('寄賣'));
+  const directRev=directSals.reduce((a,s)=>a+s.subtotal,0);
+  const consignRev=consignSals.reduce((a,s)=>a+s.subtotal,0);
+  const customRev=(S.customOrders||[]).reduce((a,o)=>{
+    let r=0;
+    if(o.depositPaid&&mOf(o.depositDate||'')===cm)r+=o.depositAmt||0;
+    if(o.balancePaid&&mOf(o.balanceDate||o.depositDate||'')===cm)r+=Math.max(0,(o.totalAmt||0)-(o.depositAmt||0));
+    return a+r;
+  },0);
+  const totalRev=directRev+consignRev+customRev;
+  const totalExp=mE.reduce((a,e)=>a+e.amount,0);
+  const cogs=mS.reduce((a,s)=>a+(s.cost||0),0);
+  const grossProfit=totalRev-cogs;
+  const grossRate=totalRev>0?grossProfit/totalRev:0;
+  const netProfit=totalRev-totalExp;
+  const targetOK=grossRate>=(S.settings.targetMargin||0.5);
+  const allPad=S.exps.filter(e=>e.payMethod===PAY[0]).reduce((a,e)=>a+e.amount,0);
+  const sugg=Math.max(0,Math.min(totalRev*(1-(S.settings.reserveRate||0.2)),allPad));
+  const resBal=S.sals.reduce((a,s)=>a+s.subtotal*(S.settings.reserveRate||0.2),0)-S.exps.filter(e=>e.payMethod===PAY[1]).reduce((a,e)=>a+e.amount,0);
+  const custActive=(S.customOrders||[]).filter(o=>o.status!=='cancelled'&&o.status!=='completed');
+  const custUnpaid=custActive.reduce((a,o)=>{const r=(o.depositPaid?(o.depositAmt||0):0)+(o.balancePaid?((o.totalAmt||0)-(o.depositAmt||0)):0);return a+((o.totalAmt||0)-r);},0);
+  const stores=getStores();
+  const recent=[
+    ...S.exps.map(e=>({type:'exp',date:e.date,text:e.description||e.category,amount:-e.amount})),
+    ...S.sals.map(s=>({type:'sal',date:s.date,text:s.product,amount:s.subtotal})),
+    ...(S.customOrders||[]).filter(o=>o.depositPaid||o.balancePaid).map(o=>({type:'custom',date:o.depositDate||o.date,text:'客定：'+o.customerName,amount:(o.depositPaid?(o.depositAmt||0):0)+(o.balancePaid?((o.totalAmt||0)-(o.depositAmt||0)):0)})),
+  ].sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,6);
+  const dl=new Date().toLocaleDateString('zh-TW',{year:'numeric',month:'long'});
+  return`<div style="font-size:10px;color:var(--muted);margin-bottom:14px;font-family:Georgia,serif;display:flex;align-items:center;gap:6px">${esc(dl)}<span style="flex:1;height:1px;background:var(--bdL);display:inline-block"></span></div>
+<div class="card" style="background:linear-gradient(135deg,var(--coralL),var(--bubbleL));border-color:var(--coralM);margin-bottom:10px">
+  <div style="font-size:10px;font-weight:700;color:var(--coral);margin-bottom:6px">本月總收入 Total Revenue</div>
+  <div style="font-size:34px;font-weight:800;color:var(--coral);line-height:1;margin-bottom:10px">${fmt(totalRev)}</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+    <div style="background:rgba(255,255,255,.75);border-radius:10px;padding:9px;text-align:center">
+      <div style="font-size:9px;color:var(--muted);font-weight:700;margin-bottom:2px">直售 Direct</div>
+      <div style="font-size:16px;font-weight:800;color:var(--coral)">${fmt(directRev)}</div>
+    </div>
+    <div style="background:rgba(255,255,255,.75);border-radius:10px;padding:9px;text-align:center">
+      <div style="font-size:9px;color:var(--muted);font-weight:700;margin-bottom:2px">寄賣 Consign</div>
+      <div style="font-size:16px;font-weight:800;color:var(--bubble)">${fmt(consignRev)}</div>
+    </div>
+    <div style="background:rgba(255,255,255,.75);border-radius:10px;padding:9px;text-align:center">
+      <div style="font-size:9px;color:var(--muted);font-weight:700;margin-bottom:2px">客定 Custom</div>
+      <div style="font-size:16px;font-weight:800;color:var(--lilac)">${fmt(customRev)}</div>
+    </div>
+  </div>
+</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="kpi" style="background:${targetOK?'var(--mintL)':'var(--coralL)'};border-color:${targetOK?'var(--mintM)':'var(--coralM)'}">
+    <div class="kz">本月毛利率</div><div class="ke">Gross Margin</div>
+    <div class="kv" style="color:${targetOK?'var(--mint)':'var(--coral)'}">${fmtP(grossRate)}</div>
+    <div style="font-size:9px;color:${targetOK?'var(--mint)':'var(--coral)'}">${targetOK?'✓ 達標':'⚠ 低於'+fmtP(S.settings.targetMargin)}</div>
+  </div>
+  <div class="kpi" style="background:${netProfit>=0?'var(--greenBg)':'var(--redBg)'};border-color:${netProfit>=0?'var(--greenBd)':'var(--red)'}">
+    <div class="kz">本月淨利</div><div class="ke">Net Profit</div>
+    <div class="kv" style="color:${netProfit>=0?'var(--green)':'var(--red)'}">${fmt(netProfit)}</div>
+  </div>
+</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="kpi" style="background:var(--bdL)"><div class="kz">本月支出</div><div class="ke">Expense</div><div class="kv" style="color:var(--sub)">${fmt(totalExp)}</div></div>
+  <div class="kpi" style="background:var(--lemonL);border-color:var(--lemonD)"><div class="kz">公積金餘額</div><div class="ke">Reserve</div><div class="kv" style="color:#8A7000">${fmt(resBal)}</div></div>
+</div>
+${stores.length&&consignSals.length?`<div class="card" style="margin-bottom:10px">
+  <div class="sec">寄賣店本月比較 <span>Store Comparison</span></div>
+  ${(()=>{const mx=Math.max(...stores.map(st=>mS.filter(s=>s.channel===st+' 寄賣').reduce((a,s)=>a+s.subtotal,0)),1);
+  return stores.map(st=>{const ss=mS.filter(s=>s.channel===st+' 寄賣');const rv=ss.reduce((a,s)=>a+s.subtotal,0);const qt=ss.reduce((a,s)=>a+s.qty,0);const stk=Object.values(S.invConsign[st]||{}).reduce((a,v)=>a+(v||0),0);
+  return`<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:13px;font-weight:700">${esc(st)}</span><span style="font-size:14px;font-weight:800;color:var(--green)">${fmt(rv)}</span></div>
+  <div style="height:8px;background:var(--bdL);border-radius:4px;overflow:hidden;margin-bottom:3px"><div style="height:100%;width:${Math.round((rv/mx)*100)}%;background:linear-gradient(90deg,var(--coral),var(--bubble));border-radius:4px"></div></div>
+  <div style="font-size:10px;color:var(--muted)">賣出 ${qt} 瓶 · 在店庫存 ${stk} 瓶</div></div>`;}).join('');})()}
+</div>`:''}
+${custActive.length?`<div class="card" style="background:linear-gradient(135deg,var(--lilacL),#F8E8FF);border-color:var(--lilacM);margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div><div style="font-size:11px;font-weight:700;color:var(--lilac)">✨ 客定款進行中</div><div style="font-size:10px;color:var(--muted);margin-top:2px">${custActive.length} 個 In Progress</div></div>
+    <div style="text-align:right"><div style="font-size:10px;color:var(--amber);font-weight:700">未收款 Outstanding</div><div style="font-size:20px;font-weight:800;color:var(--amber)">${fmt(custUnpaid)}</div></div>
+  </div>
+</div>`:''}
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+  <div class="kpi" style="background:var(--peach);border-color:var(--peachD)"><div class="kz">累計個人墊付</div><div class="ke">Total Advance</div><div class="kv" style="font-size:17px">${fmt(allPad)}</div></div>
+  <div class="kpi" style="background:var(--mintL);border-color:var(--mintM)"><div class="kz">建議本月還款</div><div class="ke">Suggested</div><div class="kv" style="color:var(--green);font-size:17px">${fmt(sugg)}</div></div>
+</div>
+${recent.length?`<div class="card"><div class="lh">最近動態<span style="font-weight:400;font-size:9px">Recent</span><div class="ll"></div></div>
+${recent.map(r=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--bdL)">
+  <div style="display:flex;align-items:center;gap:7px;min-width:0">
+    <span class="pill ${r.type==='sal'?'pm':r.type==='custom'?'pu':'pc'}">${r.type==='sal'?'銷售':r.type==='custom'?'客定':'支出'}</span>
+    <span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">${esc(r.text)}</span>
+    <span style="font-size:10px;color:var(--muted);flex-shrink:0">${(r.date||'').slice(5)||''}</span>
+  </div>
+  <div style="font-size:14px;font-weight:800;color:${r.amount>0?'var(--green)':'var(--coral)'}">${r.amount>0?'+':''}${fmt(r.amount)}</div>
+</div>`).join('')}
+</div>`:
+`<div class="empty"><div class="ei">🌸</div>尚無紀錄<br><button class="btn bc" style="width:auto;padding:11px 28px;margin-top:14px;font-size:13px" data-a="loadDemo">載入示範資料 ✨</button></div>`}`;
+}
+
+function salPage(){
+  const sv=S.forms.salV||'direct';
+  return`<div class="tabs"><button class="tb${sv==='direct'?' active':''}" data-a="setSalV" data-v="direct">🛍 直售 Direct</button><button class="tb${sv==='consign'?' active':''}" data-a="setSalV" data-v="consign">🏪 寄賣 Consignment</button><button class="tb${sv==='custom'?' active':''}" data-a="setSalV" data-v="custom">✨ 客定款 Custom</button></div>
+${sv==='direct'?salDirect():sv==='consign'?salConsign():salCustom()}`;
+}
+
+function prodGrid(selIdx,actName,storeForConsign){
+  const L1=S.prods.filter(p=>p.level===1||!p.level);
+  const L2=S.prods.filter(p=>p.level===2);
+  const rateNote=storeForConsign?` (你拿${fmtP(cRate(storeForConsign+' 寄賣'))})`:' ';
+  return`${L1.length?`<div class="lv">✦ Level 1 Classic${rateNote}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:6px">${L1.map(p=>{const gi=S.prods.indexOf(p);const income=storeForConsign?cIncome(p.price,storeForConsign+' 寄賣'):p.price;return`<button class="pb-btn${selIdx===gi?' active':''}" data-a="${actName}" data-idx="${gi}"><div class="pb-zh">${esc(p.name)}</div><div class="pb-en">${esc(p.en||'')}</div><div class="pb-pr">NT$${p.price}${storeForConsign?` → 你收${fmt(income)}`:` · 成本${fmt(prodCost(p))}`}</div></button>`}).join('')}</div>`:''}
+${L2.length?`<div class="lv">✦ Level 2 Select</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">${L2.map(p=>{const gi=S.prods.indexOf(p);const income=storeForConsign?cIncome(p.price,storeForConsign+' 寄賣'):p.price;return`<button class="pb-btn${selIdx===gi?' active':''}" data-a="${actName}" data-idx="${gi}"><div class="pb-zh">${esc(p.name)}</div><div class="pb-en">${esc(p.en||'')}</div><div class="pb-pr">NT$${p.price}${storeForConsign?` → 你收${fmt(income)}`:` · 成本${fmt(prodCost(p))}`}</div></button>`}).join('')}</div>`:''}`;
+}
+
+function salDirect(){
+  const f=S.forms.sal||{date:toDay(),prodIdx:0,qty:1,channel:S.channels.find(c=>!c.includes('寄賣'))||S.channels[0]};
+  const prod=S.prods[f.prodIdx]||S.prods[0];
+  const qty=parseInt(f.qty)||0;
+  const cost=prodCost(prod||{})*qty;
+  const actual=prod?(prod.price*qty):0;
+  const profit=actual-cost;
+  const profRate=actual>0?profit/actual:0;
+  const open=S.forms.salOpen!==false;
+  const targetOK=profRate>=(S.settings.targetMargin||0.5);
+  const directChs=S.channels.filter(c=>!c.includes('寄賣'));
+  const directSals=S.sals.filter(s=>!s.channel?.includes('寄賣'));
+  return`<div class="ft"><div><span class="ft-t">新增直售</span><span class="ft-e">Add Direct Sale</span></div><button class="ft-b" data-a="toggleSalForm">${open?'收合 ▲':'展開 ▼'}</button></div>
+${open?`<div class="card">
+  <div class="f"><label>日期 Date</label><input class="inp" type="date" value="${esc(f.date)}" data-b="sal.date"></div>
+  <div class="f"><label>產品 Product</label>${prodGrid(f.prodIdx,'selProd',null)}</div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">數量 Qty</label><input class="inp" type="number" inputmode="numeric" min="1" value="${f.qty}" data-b="sal.qty"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">小計</label><div class="sub-box"><div class="sub-main">${fmt(actual)}</div></div></div>
+  </div>
+  ${qty>0?`<div style="background:${targetOK?'var(--mintL)':'var(--coralL)'};border:2px solid ${targetOK?'var(--mintM)':'var(--coralM)'};border-radius:12px;padding:10px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+    <span style="font-size:11px;font-weight:700;color:${targetOK?'var(--mint)':'var(--coral)'}">這筆毛利 ${targetOK?'✓':'⚠'}</span>
+    <span style="font-size:16px;font-weight:800;color:${targetOK?'var(--green)':'var(--coral)'}">${fmt(profit)} (${fmtP(profRate)})</span>
+  </div>`:''}
+  <div class="f"><label>通路 Channel</label>
+    <select class="inp" data-b="sal.channel">${directChs.map(c=>`<option${f.channel===c?' selected':''}>${esc(c)}</option>`).join('')}</select>
+    <button class="add-tag" style="margin-top:6px;width:100%" data-a="addChannel">＋ 新增通路</button>
+  </div>
+  <button class="btn bm" data-a="submitSal">記錄銷售 ✓</button>
+</div>`:''}
+<div class="lh">直售記錄<span class="lc">${directSals.length}</span><div class="ll"></div></div>
+${directSals.length===0?`<div class="empty"><div class="ei">📦</div>尚無直售記錄</div>`:''}
+${directSals.map(s=>salItem(s)).join('')}`;
+}
+
+function salConsign(){
+  const stores=getStores();
+  const sel=S.forms.salConsignStore||stores[0]||'moonstone';
+  const f=S.forms.salC||{date:toDay(),prodIdx:0,qty:1};
+  const prod=S.prods[f.prodIdx]||S.prods[0];
+  const qty=parseInt(f.qty)||0;
+  const ch=sel+' 寄賣';
+  const rate=cRate(ch);
+  const retail=prod?(prod.price*qty):0;
+  const actual=Math.round(retail*rate);
+  const cost=prodCost(prod||{})*qty;
+  const profit=actual-cost;
+  const profRate=actual>0?profit/actual:0;
+  const targetOK=profRate>=(S.settings.targetMargin||0.5);
+  const open=S.forms.salCOpen!==false;
+  const consignSals=S.sals.filter(s=>s.channel===sel+' 寄賣');
+  return`<div style="display:flex;gap:6px;margin-bottom:12px">${stores.map(st=>`<button class="btn ${sel===st?'bc':'bo'}" style="flex:1;font-size:12px;padding:10px;font-weight:700" data-a="setConsignSaleStore" data-v="${esc(st)}">${esc(st)}</button>`).join('')}</div>
+<div class="ft"><div><span class="ft-t">新增寄賣銷售</span><span class="ft-e">${esc(sel)}</span></div><button class="ft-b" data-a="toggleSalCForm">${open?'收合 ▲':'展開 ▼'}</button></div>
+${open?`<div class="card">
+  <div class="f"><label>日期 Date</label><input class="inp" type="date" value="${esc(f.date)}" data-b="salC.date"></div>
+  <div class="f"><label>產品 Product（你拿 ${fmtP(rate)}）</label>${prodGrid(f.prodIdx,'selProdC',sel)}</div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">數量 Qty</label><input class="inp" type="number" inputmode="numeric" min="1" value="${f.qty}" data-b="salC.qty"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">實收 Net</label>
+      <div class="sub-box"><div class="sub-main">${fmt(actual)}</div><div class="sub-sub">標價${fmt(retail)} 抽${Math.round((1-rate)*100)}%</div></div>
+    </div>
+  </div>
+  ${qty>0?`<div style="background:${targetOK?'var(--mintL)':'var(--coralL)'};border:2px solid ${targetOK?'var(--mintM)':'var(--coralM)'};border-radius:12px;padding:10px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+    <span style="font-size:11px;font-weight:700;color:${targetOK?'var(--mint)':'var(--coral)'}">這筆毛利 ${targetOK?'✓':'⚠'}</span>
+    <span style="font-size:16px;font-weight:800;color:${targetOK?'var(--green)':'var(--coral)'}">${fmt(profit)} (${fmtP(profRate)})</span>
+  </div>`:''}
+  <div class="cw">⚠ ${esc(sel)} 寄賣：你拿 ${fmtP(rate)}，店抽 ${fmtP(1-rate)}</div>
+  <button class="btn bm" data-a="submitSalC">記錄寄賣銷售 ✓</button>
+</div>`:''}
+<div class="lh">${esc(sel)} 銷售記錄<span class="lc">${consignSals.length}</span><div class="ll"></div></div>
+${consignSals.length===0?`<div class="empty"><div class="ei">🏪</div>尚無 ${esc(sel)} 銷售記錄</div>`:''}
+${consignSals.map(s=>salItem(s)).join('')}`;
+}
+
+function salItem(s){
+  const ck=S.confirms['s_'+s.id];
+  const em=S.forms['editSal_'+s.id];
+  if(em)return`<div class="card" style="margin-bottom:9px">
+    <div style="font-size:12px;font-weight:700;color:var(--coral);margin-bottom:10px">✏️ 編輯銷售</div>
+    <div class="g2i">
+      <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">數量</label><input class="inp" type="number" value="${em.qty||s.qty}" data-b="editSal_${s.id}.qty"></div>
+      <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">日期</label><input class="inp" type="date" value="${em.date||s.date}" data-b="editSal_${s.id}.date"></div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn bc" style="flex:1;padding:10px;font-size:13px" data-a="saveEditSal" data-id="${s.id}">儲存</button>
+      <button class="btn bo" style="flex:1;padding:10px;font-size:13px" data-a="cancelEdit" data-k="editSal_${s.id}">取消</button>
+    </div>
+  </div>`;
+  return`<div class="card-sm">
+  <div class="ri">
+    <div style="margin-bottom:4px;display:flex;gap:5px;flex-wrap:wrap">
+      <span class="pill pm">${esc(s.channel)}</span>
+      ${s.profitRate!=null?`<span class="pill ${s.profitRate>=(S.settings.targetMargin||0.5)?'pg2':'pc'}">${fmtP(s.profitRate)}</span>`:''}
+    </div>
+    <div class="rz">${esc(s.product)}</div>
+    <div class="rm">${esc(s.date)} · ${s.qty}件 × NT$${s.price}</div>
+    ${s.retail&&s.retail!==s.subtotal?`<div style="font-size:10px;color:var(--muted)">標${fmt(s.retail)}→實收${fmt(s.subtotal)}</div>`:''}
+  </div>
+  <div class="del-w">
+    <div style="font-size:16px;font-weight:800;color:var(--green)">+${fmt(s.subtotal)}</div>
+    <div style="display:flex;gap:4px;margin-top:4px;justify-content:flex-end">
+      <button class="tbtn tbtn-blue" data-a="editSal" data-id="${s.id}">${EDIT}</button>
+      ${ck?`<div class="del-c"><button class="del-y" data-a="delSal" data-id="${s.id}">確認</button><button class="del-n" data-a="cancelDel" data-k="s_${s.id}">取消</button></div>`
+        :`<button class="tbtn tbtn-red" data-a="askDel" data-k="s_${s.id}">${TRASH}</button>`}
+    </div>
+  </div>
+</div>`;}
+
+function salCustom(){
+  const orders=S.customOrders||[];
+  const open=S.forms.customOpen!==false;
+  const f=S.forms.customF||{date:toDay(),customerName:'',product:'',totalAmt:'',depositAmt:'',depositDate:toDay(),status:'pending',note:'',customCost:'',isConsign:false,consignStore:getStores()[0]||'moonstone',consignRate:0.70};
+  const totalPaid=orders.reduce((a,o)=>(o.depositPaid?(a+o.depositAmt):a)+(o.balancePaid?a+Math.max(0,(o.totalAmt||0)-(o.depositAmt||0)):a),0);
+  const totalUnpaid=orders.filter(o=>o.status!=='cancelled').reduce((a,o)=>{const r=(o.depositPaid?(o.depositAmt||0):0)+(o.balancePaid?((o.totalAmt||0)-(o.depositAmt||0)):0);return a+((o.totalAmt||0)-r);},0);
+  return`<div class="g2" style="margin-bottom:14px">
+  <div class="kpi" style="background:var(--mintL);border-color:var(--mintM)"><div class="kz">已收款項</div><div class="ke">Received</div><div class="kv" style="color:var(--mint)">${fmt(orders.reduce((a,o)=>{const r=(o.depositPaid?(o.depositAmt||0):0)+(o.balancePaid?((o.totalAmt||0)-(o.depositAmt||0)):0);return a+r;},0))}</div></div>
+  <div class="kpi" style="background:var(--amberBg);border-color:var(--amberBd)"><div class="kz">未收款項</div><div class="ke">Outstanding</div><div class="kv" style="color:var(--amber)">${fmt(totalUnpaid)}</div></div>
+</div>
+<div class="ft"><div><span class="ft-t">新增客定款</span><span class="ft-e">Custom Order</span></div><button class="ft-b" data-a="toggleCustomForm">${open?'收合 ▲':'展開 ▼'}</button></div>
+${open?`<div class="card">
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">日期</label><input class="inp" type="date" value="${esc(f.date)}" data-b="customF.date"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">客戶暱稱</label><input class="inp" value="${esc(f.customerName)}" data-b="customF.customerName" placeholder="如：小花"></div>
+  </div>
+  <div class="f"><label>產品內容（可自由填寫）</label><input class="inp" value="${esc(f.product)}" data-b="customF.product" placeholder="如：婚禮小物×30、客製香氛 2瓶"></div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">總金額</label><input class="inp" type="number" value="${esc(f.totalAmt)}" data-b="customF.totalAmt" placeholder="0"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">材料成本（估算）</label><input class="inp" type="number" value="${esc(f.customCost||'')}" data-b="customF.customCost" placeholder="0"></div>
+  </div>
+  ${f.totalAmt&&f.customCost&&parseFloat(f.totalAmt)>0?`<div style="background:var(--mintL);border:2px solid var(--mintM);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;justify-content:space-between"><span style="font-size:11px;font-weight:700;color:var(--mint)">估算毛利率</span><span style="font-size:16px;font-weight:800;color:var(--green)">${fmtP((parseFloat(f.totalAmt)-parseFloat(f.customCost))/parseFloat(f.totalAmt))}</span></div>`:''}
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">訂金</label><input class="inp" type="number" value="${esc(f.depositAmt)}" data-b="customF.depositAmt" placeholder="0"></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">訂金日期</label><input class="inp" type="date" value="${esc(f.depositDate)}" data-b="customF.depositDate"></div>
+  </div>
+  <div class="f"><label>狀態</label><select class="inp" data-b="customF.status">${Object.entries(ORDER_STATUS).map(([k,v])=>`<option value="${k}"${f.status===k?' selected':''}>${v}</option>`).join('')}</select></div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+    <input type="checkbox" id="isConsign" ${f.isConsign?'checked':''} style="width:18px;height:18px;cursor:pointer" data-a="toggleCustomConsign">
+    <label for="isConsign" style="font-size:13px;cursor:pointer;font-weight:600">來自寄賣店（需抽成）</label>
+  </div>
+  ${f.isConsign?`<div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">寄賣店</label><select class="inp" data-b="customF.consignStore">${getStores().map(s=>`<option${f.consignStore===s?' selected':''}>${esc(s)}</option>`).join('')}</select></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">你拿比例</label><select class="inp" data-b="customF.consignRate">${[0.60,0.65,0.70,0.75,0.80,0.85].map(v=>`<option value="${v}"${(parseFloat(f.consignRate)||0.70)==v?' selected':''}>你拿 ${fmtP(v)}</option>`).join('')}</select></div>
+  </div>`:''}
+  <div class="f"><label>備註</label><input class="inp" value="${esc(f.note||'')}" data-b="customF.note" placeholder="備註..."></div>
+  <button class="btn bc" data-a="submitCustom">新增 ✓</button>
+</div>`:''}
+<div class="lh">客定款記錄<span class="lc">${orders.length}</span><div class="ll"></div></div>
+${orders.length===0?`<div class="empty"><div class="ei">✨</div>尚無客定款<br><span style="font-size:11px">婚禮小物、客製訂單都可以在這記錄</span></div>`:''}
+${orders.map(o=>{
+  const bal=Math.max(0,(o.totalAmt||0)-(o.depositAmt||0));
+  const recv=(o.depositPaid?(o.depositAmt||0):0)+(o.balancePaid?bal:0);
+  const outstanding=(o.totalAmt||0)-recv;
+  const actualTotal=o.isConsign?Math.round((o.totalAmt||0)*(parseFloat(o.consignRate)||0.70)):o.totalAmt||0;
+  const margin=o.customCost>0&&actualTotal>0?(actualTotal-o.customCost)/actualTotal:null;
+  const ck=S.confirms['co_'+o.id];
+  return`<div class="card" style="margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+    <div>
+      <div style="display:flex;gap:6px;margin-bottom:4px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:13px;font-weight:800">${esc(o.customerName||'未命名')}</span>
+        <span class="pill" style="background:${STATUS_BG[o.status]};color:${STATUS_COLOR[o.status]};font-size:9px">${ORDER_STATUS[o.status]||o.status}</span>
+        ${o.isConsign?`<span class="pill py" style="font-size:9px">🏪${esc(o.consignStore||'')} 抽成</span>`:''}
+      </div>
+      <div style="font-size:13px">${esc(o.product)}</div>
+      <div style="font-size:11px;color:var(--muted)">${esc(o.date)}</div>
+      ${margin!=null?`<div style="font-size:11px;color:${margin>=0.5?'var(--green)':'var(--amber)'}">毛利 ${fmtP(margin)} · 成本 ${fmt(o.customCost)}</div>`:''}
+    </div>
+    <div style="text-align:right">
+      <div style="font-size:18px;font-weight:800;color:var(--coral)">${fmt(o.totalAmt||0)}</div>
+      ${o.isConsign?`<div style="font-size:10px;color:var(--muted)">實收${fmt(actualTotal)}</div>`:''}
+      ${outstanding>0?`<div style="font-size:11px;color:var(--amber);font-weight:700">未收${fmt(outstanding)}</div>`:`<div style="font-size:11px;color:var(--green);font-weight:700">✓全收</div>`}
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+    <div style="background:${o.depositPaid?'var(--greenBg)':'var(--bdL)'};border:2px solid ${o.depositPaid?'var(--greenBd)':'var(--bd)'};border-radius:10px;padding:10px">
+      <div style="font-size:10px;color:var(--muted);font-weight:700;margin-bottom:3px">訂金 Deposit</div>
+      <div style="font-size:16px;font-weight:800;color:${o.depositPaid?'var(--green)':'var(--ink)'}">${fmt(o.depositAmt||0)}</div>
+      <div style="font-size:10px;color:var(--muted)">${o.depositDate||'未設日期'}</div>
+      <button style="margin-top:6px;width:100%;padding:5px;border:2px solid ${o.depositPaid?'var(--greenBd)':'var(--bd)'};border-radius:8px;background:${o.depositPaid?'var(--green)':'none'};color:${o.depositPaid?'#FFF':'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" data-a="toggleDeposit" data-id="${o.id}">${o.depositPaid?'✓ 已收':'標記已收'}</button>
+    </div>
+    <div style="background:${o.balancePaid?'var(--greenBg)':'var(--bdL)'};border:2px solid ${o.balancePaid?'var(--greenBd)':'var(--bd)'};border-radius:10px;padding:10px">
+      <div style="font-size:10px;color:var(--muted);font-weight:700;margin-bottom:3px">尾款 Balance</div>
+      <div style="font-size:16px;font-weight:800;color:${o.balancePaid?'var(--green)':'var(--ink)'}">${fmt(bal)}</div>
+      <div style="font-size:10px;color:var(--muted)">${o.balanceDate||'未設日期'}</div>
+      <button style="margin-top:6px;width:100%;padding:5px;border:2px solid ${o.balancePaid?'var(--greenBd)':'var(--bd)'};border-radius:8px;background:${o.balancePaid?'var(--green)':'none'};color:${o.balancePaid?'#FFF':'var(--muted)'};font-size:11px;font-weight:700;cursor:pointer;font-family:inherit" data-a="toggleBalance" data-id="${o.id}">${o.balancePaid?'✓ 已收':'標記已收'}</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+    <select style="padding:5px 10px;border:2px solid var(--bd);border-radius:8px;font-size:11px;font-weight:700;background:none;color:var(--muted);font-family:inherit;cursor:pointer" data-a="setOrderStatus" data-id="${o.id}">
+      ${Object.entries(ORDER_STATUS).map(([k,v])=>`<option value="${k}"${o.status===k?' selected':''}>${v}</option>`).join('')}
+    </select>
+    ${ck?`<div class="del-c"><button class="del-y" data-a="delCustom" data-id="${o.id}">確認刪除</button><button class="del-n" data-a="cancelDel" data-k="co_${o.id}">取消</button></div>`
+      :`<button class="tbtn tbtn-red" style="margin-left:auto" data-a="askDel" data-k="co_${o.id}">${TRASH}</button>`}
+  </div>
+  ${o.note?`<div style="font-size:11px;color:var(--muted);margin-top:6px">📝 ${esc(o.note)}</div>`:''}
+</div>`}).join('')}`;
+}
+
+// EXPENSE
+function expPage(){
+  const f=S.forms.exp||{date:toDay(),category:S.expCats[0],description:'',amount:'',currency:'TWD',origin:'',payMethod:PAY[0],supplier:'',note:''};
+  const open=S.forms.expOpen!==false;
+  const twdAmt=f.amount&&f.currency&&f.currency!=='TWD'?toTWD(f.amount,f.currency):null;
+  return`<div class="ft"><div><span class="ft-t">新增支出</span><span class="ft-e">Add Expense</span></div><button class="ft-b" data-a="toggleExpForm">${open?'收合 ▲':'展開 ▼'}</button></div>
+${open?`<div class="card">
+  <div class="f"><label>日期</label><input class="inp" type="date" value="${esc(f.date)}" data-b="exp.date"></div>
+  <div class="f"><label>類別 Category</label>
+    <div class="cat-wrap">${S.expCats.map(cat=>`<button class="cat-tag${f.category===cat?' active':''}" data-a="setExpCat" data-v="${esc(cat)}">${esc(cat)}</button>`).join('')}<button class="add-tag" data-a="addExpCat">＋</button></div>
+  </div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">幣值</label>
+      <select class="inp" data-b="exp.currency">${getCurs().map(c=>`<option value="${c.code}"${(f.currency||'TWD')===c.code?' selected':''}>${c.flag} ${c.code}</option>`).join('')}</select>
+    </div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">金額</label><input class="inp" type="number" inputmode="decimal" step="0.01" value="${esc(f.amount)}" data-b="exp.amount" placeholder="0"></div>
+  </div>
+  ${twdAmt?`<div style="background:var(--mintL);border:2px solid var(--mintM);border-radius:10px;padding:10px 14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+    <span style="font-size:11px;color:var(--mint);font-weight:700">換算 TWD</span>
+    <span style="font-size:18px;font-weight:800;color:var(--green)">${fmt(twdAmt)}</span>
+    <span style="font-size:10px;color:var(--muted)">1 ${esc(f.currency)} = ${getCur(f.currency)?.rate||1} TWD</span>
+  </div>`:''}
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">來源</label>
+      <select class="inp" data-b="exp.origin"><option value="">不指定</option><option value="tw"${f.origin==='tw'?' selected':''}>🇹🇼 台灣</option><option value="cn"${f.origin==='cn'?' selected':''}>🇨🇳 中國</option><option value="kr"${f.origin==='kr'?' selected':''}>🇰🇷 韓國</option></select>
+    </div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">供應商</label><input class="inp" value="${esc(f.supplier||'')}" placeholder="如：淘寶店名" data-b="exp.supplier"></div>
+  </div>
+  <div class="f"><label>描述 Description</label><input class="inp" value="${esc(f.description)}" placeholder="如：薰衣草精油 x3" data-b="exp.description"></div>
+  <div class="f"><label>支付方式</label>
+    <div class="pay-g"><button class="pay-b${f.payMethod===PAY[0]?' active':''}" data-a="setPay" data-v="${PAY[0]}">👤 個人墊付</button><button class="pay-b${f.payMethod===PAY[1]?' active':''}" data-a="setPay" data-v="${PAY[1]}">🏦 公積金</button></div>
+  </div>
+  <button class="btn bc" data-a="submitExp">記錄支出 ✓</button>
+</div>`:''}
+<div class="lh">支出明細<span class="lc">${S.exps.length}</span><div class="ll"></div></div>
+${S.exps.length===0?`<div class="empty"><div class="ei">💸</div>尚無支出記錄</div>`:''}
+${S.exps.map(e=>{
+  const ck=S.confirms['e_'+e.id];
+  const em=S.forms['editExp_'+e.id];
+  if(em)return`<div class="card" style="margin-bottom:9px">
+    <div style="font-size:12px;font-weight:700;color:var(--coral);margin-bottom:10px">✏️ 編輯支出</div>
+    <div class="cat-wrap">${S.expCats.map(cat=>`<button class="cat-tag${(em.category||e.category)===cat?' active':''}" data-a="setEditExpCat" data-id="${e.id}" data-v="${esc(cat)}">${esc(cat)}</button>`).join('')}</div>
+    <div class="g2i" style="margin-top:8px">
+      <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">金額 TWD</label><input class="inp" type="number" value="${em.amount!=null?em.amount:e.amount}" data-b="editExp_${e.id}.amount"></div>
+      <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">日期</label><input class="inp" type="date" value="${em.date||e.date}" data-b="editExp_${e.id}.date"></div>
+    </div>
+    <div class="f"><label>描述</label><input class="inp" value="${esc(em.description!=null?em.description:e.description)}" data-b="editExp_${e.id}.description"></div>
+    <div style="display:flex;gap:8px"><button class="btn bc" style="flex:1;padding:10px;font-size:13px" data-a="saveEditExp" data-id="${e.id}">儲存</button><button class="btn bo" style="flex:1;padding:10px;font-size:13px" data-a="cancelEdit" data-k="editExp_${e.id}">取消</button></div>
+  </div>`;
+  const orig={tw:'🇹🇼',cn:'🇨🇳',kr:'🇰🇷'}[e.origin]||'';
+  return`<div class="card-sm">
+  <div class="ri">
+    <div style="margin-bottom:4px;display:flex;gap:5px;flex-wrap:wrap">
+      <span class="pill ${e.payMethod===PAY[0]?'pc':'py'}">${e.payMethod===PAY[0]?'個人墊付':'公積金'}</span>
+      <span class="pill pmu">${esc(e.category)}</span>
+      ${orig?`<span style="font-size:12px">${orig}</span>`:''}
+      ${e.supplier?`<span class="pill pmu" style="font-size:9px">${esc(e.supplier)}</span>`:''}
+    </div>
+    <div class="rz">${esc(e.description)}</div>
+    <div class="rm">${esc(e.date)}</div>
+    ${e.origAmount&&e.currency?`<div style="font-size:10px;color:var(--muted)">${getCur(e.currency)?.flag||''} ${e.origAmount} ${e.currency}</div>`:''}
+  </div>
+  <div class="del-w">
+    <div style="font-size:16px;font-weight:800;color:var(--coral)">-${fmt(e.amount)}</div>
+    <div style="display:flex;gap:4px;margin-top:4px;justify-content:flex-end">
+      <button class="tbtn tbtn-blue" data-a="editExp" data-id="${e.id}">${EDIT}</button>
+      ${ck?`<div class="del-c"><button class="del-y" data-a="delExp" data-id="${e.id}">確認</button><button class="del-n" data-a="cancelDel" data-k="e_${e.id}">取消</button></div>`
+        :`<button class="tbtn tbtn-red" data-a="askDel" data-k="e_${e.id}">${TRASH}</button>`}
+    </div>
+  </div>
+</div>`;}).join('')}`;
+}
+
+// INVENTORY
+function invPage(){
+  const v=S.forms.invV||'stock';
+  const low=S.invItems.filter(i=>i.qty<=i.safe&&i.safe>0);
+  return`<div class="tabs"><button class="tb${v==='stock'?' active':''}" data-a="setInvV" data-v="stock">📦 庫存</button><button class="tb${v==='txn'?' active':''}" data-a="setInvV" data-v="txn">📋 進出貨</button><button class="tb${v==='store'?' active':''}" data-a="setInvV" data-v="store">🏪 寄賣店</button></div>
+${low.length?`<div style="background:var(--lemonL);border:2px solid var(--lemonD);border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#7A6000;font-weight:600">⚠ 低庫存：${low.map(i=>i.name).join('、')}</div>`:''}
+${v==='stock'?invStock():v==='txn'?invTxn():invStore()}`;
+}
+
+function invStock(){
+  const cat=S.forms.invCat||'全部';
+  const cats=['全部','原料','包材','成品','其他'];
+  const items=cat==='全部'?S.invItems:S.invItems.filter(i=>i.cat===cat);
+  const specs=S.settings.productSpecs||[{name:'擴香瓶',baseItem:'',base:104,eoItem:'',eo:26}];
+  const baseItem=S.invItems.find(i=>i.name.includes('基底擴香液')||i.name.includes('基底'));
+  const eoItem=S.invItems.find(i=>i.name.includes('精油')&&i.unit==='ml');
+  const estimates=specs.filter(sp=>sp.base>0||sp.eo>0).map(sp=>{
+    const fb=baseItem&&sp.base>0?Math.floor(baseItem.qty/sp.base):null;
+    const fe=eoItem&&sp.eo>0?Math.floor(eoItem.qty/sp.eo):null;
+    const can=fb!=null&&fe!=null?Math.min(fb,fe):fb!=null?fb:fe;
+    return can!=null?{name:sp.name,can}:null;
+  }).filter(Boolean);
+  return`${estimates.length?`<div style="background:var(--mintL);border:2px solid var(--mintM);border-radius:12px;padding:12px 16px;margin-bottom:12px">
+  <div style="font-size:11px;font-weight:700;color:var(--mint);margin-bottom:6px">🧪 目前材料可生產</div>
+  ${estimates.map(e=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--mintM)"><span style="font-size:12px;color:var(--green)">${esc(e.name)}</span><span style="font-size:18px;font-weight:800;color:var(--green)">${e.can} 瓶</span></div>`).join('')}
+</div>`:''}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+  <div style="display:flex;gap:5px;overflow-x:auto">${cats.map(c=>`<button class="pill ${cat===c?'pc':'pmu'}" style="cursor:pointer;flex-shrink:0;padding:5px 12px" data-a="setInvCat" data-v="${c}">${c}</button>`).join('')}</div>
+  <button class="btn bc" style="width:auto;padding:8px 14px;font-size:12px;flex-shrink:0;margin-left:8px" data-a="openAddItem">＋</button>
+</div>
+${items.length===0?`<div class="empty"><div class="ei">📦</div>尚無品項</div>`:''}
+${items.map(item=>{
+  const low=item.qty<=item.safe&&item.safe>0;
+  const pct=item.safe>0?Math.min(100,Math.round((item.qty/item.safe)*100)):100;
+  const barColor=low?'var(--coral)':pct>80?'var(--mint)':'var(--lemonD)';
+  return`<div class="ic${low?' low':''}">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div class="drag-handle" draggable="true" data-drag-id="${item.id}" style="display:flex;flex-direction:column;align-items:center;justify-content:center;width:26px;margin-right:8px;flex-shrink:0;gap:3px;padding:4px 0">
+      <div style="width:14px;height:2px;background:var(--muted);border-radius:1px"></div>
+      <div style="width:14px;height:2px;background:var(--muted);border-radius:1px"></div>
+      <div style="width:14px;height:2px;background:var(--muted);border-radius:1px"></div>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;gap:5px;margin-bottom:4px;flex-wrap:wrap;align-items:center">
+        <span class="pill pmu" style="font-size:9px">${esc(item.cat)}</span>
+        ${low?`<span class="pill pc" style="font-size:9px">⚠低庫存</span>`:''}
+        ${item.unitCost?`<span class="pill py" style="font-size:9px">NT$${item.unitCost}/${esc(item.unit)}</span>`:''}
+      </div>
+      <div style="font-size:14px;font-weight:700">${esc(item.name)}</div>
+      <div style="font-size:11px;color:var(--muted)">${esc(item.en||'')}</div>
+      <div class="sb-wrap"><div class="sb"><div class="sb-f" style="width:${pct}%;background:${barColor}"></div></div>
+        <div style="font-size:10px;color:var(--muted);white-space:nowrap">安全線 ${item.safe} ${esc(item.unit)}</div>
+      </div>
+    </div>
+    <div style="text-align:right;flex-shrink:0;margin-left:8px">
+      <div style="font-size:26px;font-weight:800;color:${low?'var(--coral)':'var(--ink)'};line-height:1">${item.qty}<span style="font-size:12px;font-weight:500;color:var(--muted);margin-left:2px">${esc(item.unit)}</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:5px">
+        <button class="bsm" style="background:var(--mintL);color:var(--mint)" data-a="qkIn" data-id="${item.id}">＋進貨</button>
+        <button class="bsm" style="background:var(--coralL);color:var(--coral)" data-a="qkOut" data-id="${item.id}">－出庫</button>
+      </div>
+      <button class="tbtn tbtn-red" style="margin-top:5px;display:block;margin-left:auto" data-a="delItemDirect" data-id="${item.id}">${TRASH}</button>
+    </div>
+  </div>
+</div>`}).join('')}
+<div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+  <button class="btn bm" style="font-size:11px;padding:11px 4px" data-a="openProduce">🧪 製作</button>
+  <button class="btn bc" style="font-size:11px;padding:11px 4px" data-a="openStocktake">📋 盤點</button>
+  <button class="btn bo" style="font-size:11px;padding:11px 4px" data-a="openManageItems">⚙ 管理</button>
+</div>`;
+}
+
+function invTxn(){
+  const f=S.forms.invF||{date:toDay(),itemId:'',type:'in',qty:'',currency:'TWD',unitCost:'',store:'',note:''};
+  const open=S.forms.invTxOpen!==false;
+  const typeColors={in:'var(--mint)',out:'var(--coral)',damage:'var(--red)',send:'#8A7000',return:'var(--lilac)',adjust:'var(--muted)',produce:'var(--lilac)'};
+  const typeLabels={in:'↓ 進貨',out:'↑ 出庫',damage:'💔 耗損',send:'→ 送寄賣',return:'← 退回',adjust:'⟳ 盤點',produce:'🧪 製作'};
+  return`<div class="ft"><div><span class="ft-t">記錄進出貨</span></div><button class="ft-b" data-a="toggleInvTx">${open?'收合 ▲':'展開 ▼'}</button></div>
+${open?`<div class="card">
+  <div class="f"><label>日期</label><input class="inp" type="date" value="${esc(f.date)}" data-b="invF.date"></div>
+  <div class="f"><label>品項</label><select class="inp" data-b="invF.itemId"><option value="">選擇品項...</option>${S.invItems.map(i=>`<option value="${i.id}"${f.itemId===i.id?' selected':''}>${esc(i.name)} (${i.qty}${esc(i.unit)})</option>`).join('')}</select></div>
+  <div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">類型</label>
+      <select class="inp" data-b="invF.type"><option value="in"${f.type==='in'?' selected':''}>↓ 進貨</option><option value="out"${f.type==='out'?' selected':''}>↑ 出庫</option><option value="damage"${f.type==='damage'?' selected':''}>💔 耗損</option><option value="adjust"${f.type==='adjust'?' selected':''}>⟳ 盤點調整</option><option value="send"${f.type==='send'?' selected':''}>→ 送至寄賣店</option><option value="return"${f.type==='return'?' selected':''}>← 寄賣退回</option></select>
+    </div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">數量</label><input class="inp" type="number" min="1" value="${esc(f.qty)}" data-b="invF.qty" placeholder="0"></div>
+  </div>
+  ${(f.type==='send'||f.type==='return')?`<div class="f"><label>寄賣店</label><select class="inp" data-b="invF.store">${getStores().map(s=>`<option${f.store===s?' selected':''}>${esc(s)}</option>`).join('')}</select></div>`:''}
+  ${f.type==='in'?`<div class="g2i">
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">幣值</label><select class="inp" data-b="invF.currency">${getCurs().map(c=>`<option value="${c.code}"${(f.currency||'TWD')===c.code?' selected':''}>${c.flag} ${c.code}</option>`).join('')}</select></div>
+    <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">進貨單價</label><input class="inp" type="number" min="0" value="${esc(f.unitCost||'')}" data-b="invF.unitCost" placeholder="0"></div>
+  </div>`:''}
+  <div class="f"><label>備註</label><input class="inp" value="${esc(f.note||'')}" data-b="invF.note" placeholder="備註..."></div>
+  <button class="btn bc" data-a="submitInvTx">記錄 ✓</button>
+</div>`:''}
+<div class="lh">進出貨記錄<span class="lc">${S.invTx.length}</span><div class="ll"></div></div>
+${S.invTx.slice(0,40).map(tx=>{
+  const col=typeColors[tx.type]||'var(--muted)';
+  const lbl=typeLabels[tx.type]||tx.type;
+  const ck=S.confirms['tx_'+tx.id];
+  return`<div class="card-sm">
+  <div style="width:32px;height:32px;border-radius:9px;background:var(--bdL);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:${col};flex-shrink:0">${tx.type==='in'?'↓':tx.type==='out'?'↑':tx.type==='damage'?'💔':tx.type==='send'?'→':tx.type==='return'?'←':tx.type==='produce'?'🧪':'⟳'}</div>
+  <div class="ri">
+    <div style="display:flex;gap:5px;margin-bottom:2px;flex-wrap:wrap">
+      <span class="pill pmu" style="font-size:9px">${lbl}</span>
+      ${tx.store?`<span class="pill py" style="font-size:9px">${esc(tx.store)}</span>`:''}
+    </div>
+    <div class="rz" style="font-size:13px">${esc(tx.itemName||'')}</div>
+    <div class="rm">${esc(tx.date)}${tx.note?` · ${esc(tx.note)}`:''}</div>
+    ${tx.unitCost>0&&tx.type==='in'?`<div style="font-size:10px;color:var(--muted)">${fmt(tx.unitCost*tx.qty)}</div>`:''}
+  </div>
+  <div class="del-w">
+    <div style="font-size:16px;font-weight:800;color:${col}">${tx.type==='in'||tx.type==='return'||tx.type==='produce'?'+':tx.type==='adjust'?'=':'-'}${tx.qty}</div>
+    ${ck?`<div class="del-c"><button class="del-y" data-a="delInvTx" data-id="${tx.id}">確認</button><button class="del-n" data-a="cancelDel" data-k="tx_${tx.id}">取消</button></div>`
+      :`<button class="tbtn tbtn-red" style="margin-top:4px" data-a="askDel" data-k="tx_${tx.id}">${TRASH}</button>`}
+  </div>
+</div>`}).join('')}
+${S.invTx.length===0?`<div class="empty"><div class="ei">📋</div>尚無記錄</div>`:''}`;
+}
+
+function invStore(){
+  const sel=S.forms.storeV||getStores()[0]||'moonstone';
+  const storeStock=S.invConsign[sel]||{};
+  const prodItems=Object.entries(storeStock).filter(([_,q])=>q>0).map(([name,qty])=>{
+    const p=S.prods.find(pr=>pr.name===name)||{name,en:'',level:1,price:0,eoC:0};
+    const income=cIncome(p.price,sel+' 寄賣');
+    const cost=prodCost(p);
+    return{...p,qty,cost,income,profit:income-cost};
+  });
+  const total=prodItems.reduce((a,p)=>a+p.qty,0);
+  const cm=nowM();
+  const storeSales=S.sals.filter(s=>mOf(s.date)===cm&&s.channel===sel+' 寄賣');
+  const storeSalesAmt=storeSales.reduce((a,s)=>a+s.subtotal,0);
+  const deliveries=S.invTx.filter(tx=>tx.type==='send'&&tx.store===sel).sort((a,b)=>b.date.localeCompare(a.date));
+  return`<div class="tabs" style="margin-bottom:12px">${getStores().map(s=>`<button class="tb${sel===s?' active':''}" data-a="setStoreV" data-v="${s}">${esc(s)}</button>`).join('')}</div>
+<div class="g2" style="margin-bottom:12px">
+  <div class="kpi" style="background:var(--coralL);border-color:var(--coralM)"><div class="kz">在店庫存</div><div class="ke">Current Stock</div><div class="kv" style="color:var(--coral)">${total}<span style="font-size:12px;font-weight:500">瓶</span></div></div>
+  <div class="kpi" style="background:var(--mintL);border-color:var(--mintM)"><div class="kz">本月實收</div><div class="ke">This Month</div><div class="kv" style="color:var(--mint)">${fmt(storeSalesAmt)}</div></div>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+  <div class="lh" style="margin:0">${esc(sel)} 在店品項</div>
+  <button class="btn bc" style="width:auto;padding:8px 14px;font-size:12px" data-a="openSend" data-s="${esc(sel)}">＋ 送貨到店</button>
+</div>
+${prodItems.length===0?`<div class="empty"><div class="ei">🏪</div>${esc(sel)} 目前無庫存</div>`:''}
+${prodItems.map(p=>`<div class="card-sm">
+  <div class="ri">
+    <div style="margin-bottom:3px"><span class="pill ${p.level===2?'pu':'ps'}" style="font-size:9px">Lv${p.level||1}</span></div>
+    <div class="rz">${esc(p.name)}</div><div class="re">${esc(p.en||'')}</div>
+    <div style="font-size:10px;color:var(--muted);margin-top:2px">售${fmt(p.price)} → 你收${fmt(p.income)} · 毛利 <span style="color:var(--green);font-weight:700">${fmt(p.profit)}</span></div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:24px;font-weight:800">${p.qty}<span style="font-size:11px;color:var(--muted)">瓶</span></div>
+    <button class="bsm" style="background:var(--amberBg);color:var(--amber);border-radius:6px;font-size:10px;margin-top:3px" data-a="doReturn" data-s="${esc(sel)}" data-n="${esc(p.name)}">退回</button>
+  </div>
+</div>`).join('')}
+${deliveries.length?`<div class="card" style="margin-top:10px">
+  <div class="sec">送貨記錄 <span>Delivery History</span></div>
+  ${deliveries.map(d=>{const ck=S.confirms['tx_'+d.id];return`<div class="rr">
+    <span class="rl">📦 ${esc(d.date)} · ${esc(d.itemName)}</span>
+    <div style="text-align:right">
+      <span class="rv">+${d.qty}瓶</span>
+      <div style="display:flex;justify-content:flex-end;margin-top:2px">
+        ${ck?`<div class="del-c"><button class="del-y" data-a="delInvTx" data-id="${d.id}">確認</button><button class="del-n" data-a="cancelDel" data-k="tx_${d.id}">取消</button></div>`
+          :`<button class="tbtn tbtn-red" data-a="askDel" data-k="tx_${d.id}">${TRASH}</button>`}
+      </div>
+    </div>
+  </div>`}).join('')}
+</div>`:''}`;
+}
+
+// REPORT
+function repPage(){
+  const rv=S.forms.repV||'monthly';
+  const months=[...new Set([...S.sals.map(s=>mOf(s.date)),...S.exps.map(e=>mOf(e.date)),nowM()])].filter(Boolean).sort().reverse();
+  const m=S.forms.repM||months[0]||nowM();
+  const year=S.forms.repY||new Date().getFullYear().toString();
+  const mS=S.sals.filter(s=>mOf(s.date)===m);
+  const mE=S.exps.filter(e=>mOf(e.date)===m);
+  const directRev=mS.filter(s=>!s.channel?.includes('寄賣')).reduce((a,s)=>a+s.subtotal,0);
+  const consignRev=mS.filter(s=>s.channel?.includes('寄賣')).reduce((a,s)=>a+s.subtotal,0);
+  const customRev=(S.customOrders||[]).reduce((a,o)=>{let r=0;if(o.depositPaid&&mOf(o.depositDate||'')===m)r+=o.depositAmt||0;if(o.balancePaid&&mOf(o.balanceDate||o.depositDate||'')===m)r+=Math.max(0,(o.totalAmt||0)-(o.depositAmt||0));return a+r;},0);
+  const totalRev=directRev+consignRev+customRev;
+  const tE=mE.reduce((a,e)=>a+e.amount,0);
+  const cogs=mS.reduce((a,s)=>a+(s.cost||0),0);
+  const allPad=S.exps.filter(e=>e.payMethod===PAY[0]).reduce((a,e)=>a+e.amount,0);
+  const sugg=Math.max(0,Math.min(totalRev*(1-(S.settings.reserveRate||0.2)),allPad));
+  const byProd=S.prods.map(p=>({name:p.name,qty:mS.filter(s=>s.product.startsWith(p.name)).reduce((a,s)=>a+s.qty,0),amt:mS.filter(s=>s.product.startsWith(p.name)).reduce((a,s)=>a+s.subtotal,0),profit:mS.filter(s=>s.product.startsWith(p.name)).reduce((a,s)=>a+(s.profit||0),0)})).filter(x=>x.qty>0).sort((a,b)=>b.amt-a.amt);
+  const yrM=Array.from({length:12},(_,i)=>`${year}-${String(i+1).padStart(2,'0')}`);
+  const yrR=yrM.map(mo=>S.sals.filter(s=>mOf(s.date)===mo).reduce((a,s)=>a+s.subtotal,0));
+  const yrE=yrM.map(mo=>S.exps.filter(e=>mOf(e.date)===mo).reduce((a,e)=>a+e.amount,0));
+  const tR=yrR.reduce((a,v)=>a+v,0),tEy=yrE.reduce((a,v)=>a+v,0);
+  const maxY=Math.max(...yrR,1);
+  const ptIdx=parseInt(S.forms.ptIdx)||0;const ptProd=S.prods[ptIdx];const ptCost=ptProd?prodCost(ptProd):0;
+  const ptSuggest=ptCost>0?Math.ceil(ptCost/(1-(S.settings.targetMargin||0.5))/10)*10:0;
+  const copied=S.forms.copied;
+  return`<div class="tabs"><button class="tb${rv==='monthly'?' active':''}" data-a="setRepV" data-v="monthly">月報</button><button class="tb${rv==='annual'?' active':''}" data-a="setRepV" data-v="annual">年報</button><button class="tb${rv==='pricing'?' active':''}" data-a="setRepV" data-v="pricing">定價</button></div>
+${rv==='monthly'?`
+<div class="f"><label>月份</label><select class="inp" data-b="repM">${months.map(mo=>`<option value="${mo}"${m===mo?' selected':''}>${mo.slice(0,4)}年${parseInt(mo.slice(5))}月</option>`).join('')}</select></div>
+<div class="card" style="background:linear-gradient(135deg,var(--coralL),var(--bubbleL));border-color:var(--coralM);margin-bottom:10px">
+  <div style="font-size:10px;font-weight:700;color:var(--coral);margin-bottom:8px">本月收入 Revenue</div>
+  <div style="font-size:30px;font-weight:800;color:var(--coral);margin-bottom:8px">${fmt(totalRev)}</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+    ${[{l:'直售',v:directRev,c:'var(--coral)'},{l:'寄賣',v:consignRev,c:'var(--bubble)'},{l:'客定',v:customRev,c:'var(--lilac)'}].map(x=>`<div style="background:rgba(255,255,255,.75);border-radius:8px;padding:8px;text-align:center"><div style="font-size:9px;color:var(--muted);font-weight:700">${x.l}</div><div style="font-size:15px;font-weight:800;color:${x.c}">${fmt(x.v)}</div></div>`).join('')}
+  </div>
+</div>
+<div class="g2" style="margin-bottom:10px">
+  <div class="kpi" style="background:var(--mintL);border-color:var(--mintM)"><div class="kz">毛利</div><div class="kv" style="color:var(--mint)">${fmt(totalRev-cogs)}<span style="font-size:11px;color:var(--muted)"> (${fmtP(totalRev>0?(totalRev-cogs)/totalRev:0)})</span></div></div>
+  <div class="kpi" style="background:${totalRev-tE>=0?'var(--greenBg)':'var(--redBg)'};border-color:${totalRev-tE>=0?'var(--greenBd)':'var(--red)'}"><div class="kz">淨利</div><div class="kv" style="color:${totalRev-tE>=0?'var(--green)':'var(--red)'}">${fmt(totalRev-tE)}</div></div>
+</div>
+<div class="card">
+  <div class="sec">支出分類分析 <span>Click to expand</span></div>
+  ${(()=>{const cs=S.expCats.map(cat=>{const items=mE.filter(e=>e.category===cat);const total=items.reduce((r,e)=>r+e.amount,0);return{cat,items,total};}).filter(x=>x.total>0).sort((a,b)=>b.total-a.total);
+    if(cs.length===0)return'<div style="font-size:12px;color:var(--muted)">本月無支出</div>';
+    const mx=Math.max(...cs.map(c=>c.total),1);
+    const expd=S.forms.expandedCat;
+    return cs.map((c,i)=>{const isE=expd===c.cat;const pct=Math.round(c.total/mx*100);return`<div style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:6px 0" data-a="toggleExpCat" data-cat="${esc(c.cat)}">
+        <div style="flex:1">
+          <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+            <span style="font-size:13px;font-weight:700">${i===0?'🥇':i===1?'🥈':i===2?'🥉':'·'} ${esc(c.cat)} <span style="font-size:10px;color:var(--muted);font-weight:400">${c.items.length}筆</span></span>
+            <span style="font-size:14px;font-weight:800;color:var(--coral)">NT$ ${fmtN(c.total)}</span>
+          </div>
+          <div style="height:6px;background:var(--bdL);border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--coral),var(--bubble));border-radius:3px"></div></div>
+        </div>
+        <span style="font-size:11px;color:var(--muted);margin-left:8px">${isE?'▲':'▼'}</span>
+      </div>
+      ${isE?`<div style="background:var(--bdL);border-radius:8px;padding:8px 12px;margin-top:5px">
+        ${c.items.map(e=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--sf)">
+          <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">${esc(e.description)}</div><div style="font-size:10px;color:var(--muted)">${esc(e.date)}${e.supplier?' · '+esc(e.supplier):''}</div></div>
+          <span style="font-size:13px;font-weight:700;color:var(--coral)">NT$ ${fmtN(e.amount)}</span>
+        </div>`).join('')}
+      </div>`:''}
+    </div>`}).join('');
+  })()}
+  <div class="rr" style="border:none;margin-top:8px"><span class="rl" style="color:var(--coral)">本月個人墊付</span><span class="rv" style="color:var(--coral)">NT$ ${fmtN(mE.filter(e=>e.payMethod===PAY[0]).reduce((a,e)=>a+e.amount,0))}</span></div>
+</div>
+${byProd.length?`<div class="card"><div class="sec">產品排行</div>${byProd.map((p,i)=>`<div class="rr" style="${i===byProd.length-1?'border:none':''}"><span class="rl">${i===0?'🥇':i===1?'🥈':i===2?'🥉':'·'} ${esc(p.name)} ×${p.qty}</span><div style="text-align:right"><div class="rv" style="color:var(--green)">NT$ ${fmtN(p.amt)}</div><div style="font-size:10px;color:var(--muted)">毛利 ${fmt(p.profit)}</div></div></div>`).join('')}</div>`:''}
+<div class="card"><div class="sec">還款</div>
+  <div class="rr"><span class="rl" style="color:var(--coral)">累計未還款</span><span class="rv" style="color:var(--coral)">NT$ ${fmtN(allPad)}</span></div>
+  <div class="rr" style="border:none"><span class="rl" style="color:var(--green);font-weight:800">★ 本月建議還款</span><span class="rv" style="color:var(--green);font-size:16px">NT$ ${fmtN(sugg)}</span></div>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+  <button class="btn ${copied?'bm':'bc'}" style="font-size:12px" data-a="copyRep">${copied?'✓ 已複製':'📋 複製月報文字'}</button>
+  <button class="btn bo" style="font-size:12px" data-a="exportNotion">📝 Notion 文字</button>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+  <button class="btn bsk" style="font-size:12px;background:var(--lemonD);color:#FFF" data-a="exportCSV">📊 完整備份 CSV (包含庫存/寄賣)</button>
+  <button class="btn bo" style="font-size:12px" data-a="exportCSVText">📋 備份 CSV 文字</button>
+</div>
+`:rv==='annual'?`
+<div class="f"><label>年份</label><select class="inp" data-b="repY" style="max-width:160px">${[new Date().getFullYear(),new Date().getFullYear()-1].map(y=>`<option${year==y?' selected':''}>${y}</option>`).join('')}</select></div>
+<div class="g2" style="margin-bottom:12px">
+  <div class="kpi" style="background:var(--coralL);border-color:var(--coralM)"><div class="kz">年度收入</div><div class="kv" style="color:var(--coral)">${fmt(tR)}</div></div>
+  <div class="kpi" style="background:var(--bdL)"><div class="kz">年度支出</div><div class="kv" style="color:var(--sub)">${fmt(tEy)}</div></div>
+  <div class="kpi" style="background:${tR-tEy>=0?'var(--mintL)':'var(--redBg)'};border-color:${tR-tEy>=0?'var(--mintM)':'var(--red)'}"><div class="kz">年度淨利</div><div class="kv" style="color:${tR-tEy>=0?'var(--mint)':'var(--red)'}">${fmt(tR-tEy)}</div></div>
+  <div class="kpi" style="background:var(--lemonL);border-color:var(--lemonD)"><div class="kz">年度公積金</div><div class="kv" style="color:#8A7000">${fmt(tR*(S.settings.reserveRate||0.2))}</div></div>
+</div>
+<div class="card"><div class="sec">月度趨勢</div>
+  <div style="display:flex;align-items:flex-end;gap:3px;height:80px">
+    ${yrR.map((r,i)=>`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;background:var(--coral);opacity:.8;border-radius:3px 3px 0 0;height:${Math.round((r/maxY)*72)}px;min-height:${r>0?3:0}px"></div></div>`).join('')}
+  </div>
+  <div style="display:flex;gap:3px;margin-top:3px">${Array.from({length:12},(_,i)=>`<div style="flex:1;font-size:7px;color:var(--muted);text-align:center">${i+1}</div>`).join('')}</div>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+  <button class="btn bsk" style="font-size:12px;background:var(--lemonD);color:#FFF" data-a="exportAnnCSV">📊 年報 CSV</button>
+  <button class="btn bo" style="font-size:12px" data-a="exportAnnNotion">📝 Notion 文字</button>
+</div>
+<button class="btn bo" style="font-size:12px" data-a="exportAnnCSVText">📋 年報 CSV 文字</button>
+`:`
+<div class="card"><div class="sec">定價計算 Pricing</div>
+  <div class="f"><label>選擇產品</label>
+    <div style="display:flex;gap:6px">
+      <select class="inp" style="flex:1" data-b="ptIdx">${S.prods.map((p,i)=>`<option value="${i}"${ptIdx==i?' selected':''}>${esc(p.name)} Lv${p.level||1}</option>`).join('')}</select>
+      <button class="btn bo" style="width:auto;padding:11px 12px;font-size:11px" data-a="openSettings">⚙ 管理</button>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">在「設定」中可新增、編輯、刪除產品</div>
+  </div>
+  ${ptProd?`<div style="background:var(--coralL);border:2px solid var(--coralM);border-radius:12px;padding:14px;margin-bottom:12px">
+    <div style="font-size:11px;font-weight:700;color:var(--coral);margin-bottom:8px">成本拆解 A+B</div>
+    <div class="rr"><span class="rl">A 固定包材</span><span class="rv">NT$ ${fmtN(S.settings.baseCost||118)}</span></div>
+    <div class="rr"><span class="rl">B 精油成本</span><span class="rv">NT$ ${fmtN(ptProd.eoC||0)}</span></div>
+    <div class="rr" style="border:none"><span class="rl" style="font-weight:700">總成本</span><span class="rv" style="font-size:18px;color
