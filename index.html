@@ -112,6 +112,10 @@ select.inp{appearance:none;-webkit-appearance:none;background-image:url("data:im
 .sb{flex:1;height:5px;background:var(--bdL);border-radius:3px;overflow:hidden}
 .sb-f{height:100%;border-radius:3px}
 .ic{background:var(--sf);border:2px solid var(--bdL);border-radius:12px;padding:12px 14px;margin-bottom:9px}
+.photo-thumb{width:52px;height:52px;border-radius:10px;object-fit:cover;border:2px solid var(--bdL);cursor:pointer;flex-shrink:0}
+.photo-add{width:52px;height:52px;border-radius:10px;border:2px dashed var(--bdL);display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer;flex-shrink:0;background:var(--bg);color:var(--muted)}
+.photo-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px}
+.photo-overlay img{max-width:100%;max-height:85vh;border-radius:14px;object-fit:contain}
 .ic.low{border-color:var(--amberBd);background:var(--amberBg)}
 .ic.drag-over{border-color:var(--coral);background:var(--coralL)}
 .ic.dragging{opacity:.4;border-style:dashed}
@@ -152,6 +156,10 @@ async function loadA(k){try{const r=await dbG(k);return r?JSON.parse(r):[]}catch
 async function loadO(k,d){try{const r=await dbG(k);return r?JSON.parse(r):d}catch{return d}}
 async function saveA(k,d){await dbS(k,JSON.stringify(d))}
 async function saveO(k,d){await dbS(k,JSON.stringify(d))}
+// 照片存取（每張獨立存，key = photo_{id}）
+async function savePhoto(id,dataUrl){await dbS('photo_'+id,dataUrl);}
+async function loadPhoto(id){try{return await dbG('photo_'+id)||null;}catch{return null;}}
+async function delPhoto(id){try{const db=await openDB();return new Promise((r)=>{const req=db.transaction('kv','readwrite').objectStore('kv').delete('photo_'+id);req.onsuccess=()=>r(true);req.onerror=()=>r(false);});}catch{return false;}}
 
 const TRASH='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>';
 const EDIT='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
@@ -217,6 +225,7 @@ const S={tab:'dash',exps:[],sals:[],prods:[...DEF_PRODS],customOrders:[],consign
   settings:{...DEF_SETTINGS},invItems:[...DEF_INV],invTx:[],invConsign:{},
   channels:['Instagram 直售','Line 直售','市集現場','朋友介紹','moonstone 寄賣','jiang space 寄賣','其他'],
   expCats:['材料','研發','行銷','物流','其他'],
+  photos:{},
   modals:{},forms:{},confirms:{},toast:null,_tt:null};
 
 const fmt=n=>'$'+Math.round(n||0).toLocaleString();
@@ -387,7 +396,48 @@ function pureProdName(productStr){
 }
 
 function showToast(msg){if(S._tt)clearTimeout(S._tt);S.toast=msg;re();S._tt=setTimeout(()=>{S.toast=null;re();},2400);}
-function render(){document.getElementById('app').innerHTML=layout();bindAll();}
+async function handlePhotoUpload(id,file){
+  if(!file)return;
+  const MAX=800; // 最大邊長 px
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    // 壓縮到合理大小
+    const img=new Image();
+    img.onload=async()=>{
+      const canvas=document.createElement('canvas');
+      const scale=Math.min(1,MAX/Math.max(img.width,img.height));
+      canvas.width=Math.round(img.width*scale);
+      canvas.height=Math.round(img.height*scale);
+      canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);
+      const dataUrl=canvas.toDataURL('image/jpeg',0.82);
+      S.photos[id]=dataUrl;
+      await savePhoto(id,dataUrl);
+      delete S.modals.viewPhoto; // 關閉放大視圖
+      showToast('✓ 照片已儲存 📷');re();
+    };
+    img.src=e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function render(){
+  const app=document.getElementById('app');
+  const winY=window.scrollY;
+  // 用 overlay 的 data-m 當 key，穩定記住每個 modal 的捲動位置
+  const modalScroll={};
+  document.querySelectorAll('.overlay[data-m]').forEach(ov=>{
+    const m=ov.querySelector('.modal');
+    if(m)modalScroll[ov.dataset.m]=m.scrollTop;
+  });
+  app.innerHTML=layout();
+  bindAll();
+  window.scrollTo({top:winY,behavior:'instant'});
+  // 還原各 modal 捲動位置
+  document.querySelectorAll('.overlay[data-m]').forEach(ov=>{
+    const m=ov.querySelector('.modal');
+    if(m&&modalScroll[ov.dataset.m]!=null)m.scrollTop=modalScroll[ov.dataset.m];
+  });
+}
 function re(){render();}
 
 const TABS=[
@@ -549,7 +599,7 @@ function salDirect(){
   const targetOK=profRate>=(S.settings.targetMargin||0.5);
   const directChs=S.channels.filter(c=>!c.includes('寄賣'));
   const directSals=S.sals.filter(s=>!s.channel?.includes('寄賣'));
-  return`<div class="ft"><div><span class="ft-t">新增直售</span><span class="ft-e">Add Direct Sale</span></div><button class="ft-b" data-a="toggleSalForm">${open?'收合 ▲':'展開 ▼'}</button></div>
+  return`<div class="ft"><div><span class="ft-t">新增直售 <span style="font-weight:400;color:var(--muted);font-size:11px">Direct Sale</span></span></span><span class="ft-e">Add Direct Sale</span></div><button class="ft-b" data-a="toggleSalForm">${open?'收合 ▲':'展開 ▼'}</button></div>
 ${open?`<div class="card">
   <div class="f"><label>日期 Date</label><input class="inp" type="date" value="${esc(f.date)}" data-b="sal.date"></div>
   <div class="f"><label>產品 Product</label>${prodGrid(f.prodIdx,'selProd',null)}</div>
@@ -589,7 +639,7 @@ function salConsign(){
   const open=S.forms.salCOpen!==false;
   const consignSals=S.sals.filter(s=>s.channel===sel+' 寄賣');
   return`<div style="display:flex;gap:6px;margin-bottom:12px">${stores.map(st=>`<button class="btn ${sel===st?'bc':'bo'}" style="flex:1;font-size:12px;padding:10px;font-weight:700" data-a="setConsignSaleStore" data-v="${esc(st)}">${esc(st)}</button>`).join('')}</div>
-<div class="ft"><div><span class="ft-t">新增寄賣銷售</span><span class="ft-e">${esc(sel)}</span></div><button class="ft-b" data-a="toggleSalCForm">${open?'收合 ▲':'展開 ▼'}</button></div>
+<div class="ft"><div><span class="ft-t">新增寄賣銷售 <span style="font-weight:400;color:var(--muted);font-size:11px">Consignment Sale</span></span></span><span class="ft-e">${esc(sel)}</span></div><button class="ft-b" data-a="toggleSalCForm">${open?'收合 ▲':'展開 ▼'}</button></div>
 ${open?`<div class="card">
   <div class="f"><label>日期 Date</label><input class="inp" type="date" value="${esc(f.date)}" data-b="salC.date"></div>
   <div class="f"><label>產品 Product（你拿 ${fmtP(rate)}）</label>${prodGrid(f.prodIdx,'selProdC',sel)}</div>
@@ -655,7 +705,7 @@ function salCustom(){
   <div class="kpi" style="background:var(--mintL);border-color:var(--mintM)"><div class="kz">已收款項</div><div class="ke">Received</div><div class="kv" style="color:var(--mint)">${fmt(orders.reduce((a,o)=>{const r=(o.depositPaid?(o.depositAmt||0):0)+(o.balancePaid?((o.totalAmt||0)-(o.depositAmt||0)):0);return a+r;},0))}</div></div>
   <div class="kpi" style="background:var(--amberBg);border-color:var(--amberBd)"><div class="kz">未收款項</div><div class="ke">Outstanding</div><div class="kv" style="color:var(--amber)">${fmt(totalUnpaid)}</div></div>
 </div>
-<div class="ft"><div><span class="ft-t">新增客定款</span><span class="ft-e">Custom Order</span></div><button class="ft-b" data-a="toggleCustomForm">${open?'收合 ▲':'展開 ▼'}</button></div>
+<div class="ft"><div><span class="ft-t">新增客定款 <span style="font-weight:400;color:var(--muted);font-size:11px">Custom Order</span></span></span><span class="ft-e">Custom Order</span></div><button class="ft-b" data-a="toggleCustomForm">${open?'收合 ▲':'展開 ▼'}</button></div>
 ${open?`<div class="card">
   <div class="g2i">
     <div><label style="font-size:11px;color:var(--muted);font-weight:700;display:block;margin-bottom:5px">日期</label><input class="inp" type="date" value="${esc(f.date)}" data-b="customF.date"></div>
@@ -740,7 +790,7 @@ function expPage(){
   const f=S.forms.exp||{date:toDay(),category:S.expCats[0],description:'',amount:'',currency:'TWD',origin:'',payMethod:PAY[0],supplier:'',note:''};
   const open=S.forms.expOpen!==false;
   const twdAmt=f.amount&&f.currency&&f.currency!=='TWD'?toTWD(f.amount,f.currency):null;
-  return`<div class="ft"><div><span class="ft-t">新增支出</span><span class="ft-e">Add Expense</span></div><button class="ft-b" data-a="toggleExpForm">${open?'收合 ▲':'展開 ▼'}</button></div>
+  return`<div class="ft"><div><span class="ft-t">新增支出 <span style="font-weight:400;color:var(--muted);font-size:11px">New Expense</span></span></span><span class="ft-e">Add Expense</span></div><button class="ft-b" data-a="toggleExpForm">${open?'收合 ▲':'展開 ▼'}</button></div>
 ${open?`<div class="card">
   <div class="f"><label>日期</label><input class="inp" type="date" value="${esc(f.date)}" data-b="exp.date"></div>
   <div class="f"><label>類別 Category</label>
@@ -850,6 +900,9 @@ ${items.map(item=>{
       <div style="width:14px;height:2px;background:var(--muted);border-radius:1px"></div>
       <div style="width:14px;height:2px;background:var(--muted);border-radius:1px"></div>
     </div>
+    ${S.photos[item.id]
+      ?`<img class="photo-thumb" src="${S.photos[item.id]}" alt="${esc(item.name)}" data-a="viewPhoto" data-id="${item.id}" style="margin-right:10px">`
+      :`<label class="photo-add" title="上傳照片" style="margin-right:10px">📷<input type="file" accept="image/*" style="display:none" data-a="uploadPhoto" data-id="${item.id}"></label>`}
     <div style="flex:1;min-width:0">
       <div style="display:flex;gap:5px;margin-bottom:4px;flex-wrap:wrap;align-items:center">
         <span class="pill pmu" style="font-size:9px">${esc(item.cat)}</span>
@@ -884,7 +937,7 @@ function invTxn(){
   const open=S.forms.invTxOpen!==false;
   const typeColors={in:'var(--mint)',out:'var(--coral)',damage:'var(--red)',send:'#8A7000',return:'var(--lilac)',adjust:'var(--muted)',produce:'var(--lilac)'};
   const typeLabels={in:'↓ 進貨',out:'↑ 出庫',damage:'💔 耗損',send:'→ 送寄賣',return:'← 退回',adjust:'⟳ 盤點',produce:'🧪 製作'};
-  return`<div class="ft"><div><span class="ft-t">記錄進出貨</span></div><button class="ft-b" data-a="toggleInvTx">${open?'收合 ▲':'展開 ▼'}</button></div>
+  return`<div class="ft"><div><span class="ft-t">記錄進出貨 <span style="font-weight:400;color:var(--muted);font-size:11px">Stock In / Out</span></span></span></div><button class="ft-b" data-a="toggleInvTx">${open?'收合 ▲':'展開 ▼'}</button></div>
 ${open?`<div class="card">
   <div class="f"><label>日期</label><input class="inp" type="date" value="${esc(f.date)}" data-b="invF.date"></div>
   <div class="f"><label>品項</label><select class="inp" data-b="invF.itemId"><option value="">選擇品項...</option>${S.invItems.map(i=>`<option value="${i.id}"${f.itemId===i.id?' selected':''}>${esc(i.name)} (${i.qty}${esc(i.unit)})</option>`).join('')}</select></div>
@@ -1017,7 +1070,7 @@ ${rv==='monthly'?`
   <div class="kpi" style="background:${totalRev-tE>=0?'var(--greenBg)':'var(--redBg)'};border-color:${totalRev-tE>=0?'var(--greenBd)':'var(--red)'}"><div class="kz">淨利</div><div class="kv" style="color:${totalRev-tE>=0?'var(--green)':'var(--red)'}">${fmt(totalRev-tE)}</div></div>
 </div>
 <div class="card">
-  <div class="sec">支出分類分析 <span>Click to expand</span></div>
+  <div class="sec">支出分類分析 <span>Expense Analysis</span></div>
   ${(()=>{const cs=S.expCats.map(cat=>{const items=mE.filter(e=>e.category===cat);const total=items.reduce((r,e)=>r+e.amount,0);return{cat,items,total};}).filter(x=>x.total>0).sort((a,b)=>b.total-a.total);
     if(cs.length===0)return'<div style="font-size:12px;color:var(--muted)">本月無支出</div>';
     const mx=Math.max(...cs.map(c=>c.total),1);
@@ -1043,8 +1096,8 @@ ${rv==='monthly'?`
   })()}
   <div class="rr" style="border:none;margin-top:8px"><span class="rl" style="color:var(--coral)">本月個人墊付</span><span class="rv" style="color:var(--coral)">NT$ ${fmtN(mE.filter(e=>e.payMethod===PAY[0]).reduce((a,e)=>a+e.amount,0))}</span></div>
 </div>
-${byProd.length?`<div class="card"><div class="sec">產品排行</div>${byProd.map((p,i)=>`<div class="rr" style="${i===byProd.length-1?'border:none':''}"><span class="rl">${i===0?'🥇':i===1?'🥈':i===2?'🥉':'·'} ${esc(p.name)} ×${p.qty}</span><div style="text-align:right"><div class="rv" style="color:var(--green)">NT$ ${fmtN(p.amt)}</div><div style="font-size:10px;color:var(--muted)">毛利 ${fmt(p.profit)}</div></div></div>`).join('')}</div>`:''}
-<div class="card"><div class="sec">還款</div>
+${byProd.length?`<div class="card"><div class="sec">產品排行 <span>Top Products</span></div>${byProd.map((p,i)=>`<div class="rr" style="${i===byProd.length-1?'border:none':''}"><span class="rl">${i===0?'🥇':i===1?'🥈':i===2?'🥉':'·'} ${esc(p.name)} ×${p.qty}</span><div style="text-align:right"><div class="rv" style="color:var(--green)">NT$ ${fmtN(p.amt)}</div><div style="font-size:10px;color:var(--muted)">毛利 ${fmt(p.profit)}</div></div></div>`).join('')}</div>`:''}
+<div class="card"><div class="sec">還款 <span>Reimbursement</span></div>
   <div class="rr"><span class="rl" style="color:var(--coral)">累計未還款</span><span class="rv" style="color:var(--coral)">NT$ ${fmtN(allPad)}</span></div>
   <div class="rr" style="border:none"><span class="rl" style="color:var(--green);font-weight:800">★ 本月建議還款</span><span class="rv" style="color:var(--green);font-size:16px">NT$ ${fmtN(sugg)}</span></div>
 </div>
@@ -1066,7 +1119,7 @@ ${byProd.length?`<div class="card"><div class="sec">產品排行</div>${byProd.m
   <div class="kpi" style="background:${tR-tEy>=0?'var(--mintL)':'var(--redBg)'};border-color:${tR-tEy>=0?'var(--mintM)':'var(--red)'}"><div class="kz">年度淨利</div><div class="kv" style="color:${tR-tEy>=0?'var(--mint)':'var(--red)'}">${fmt(tR-tEy)}</div></div>
   <div class="kpi" style="background:var(--lemonL);border-color:var(--lemonD)"><div class="kz">年度公積金</div><div class="kv" style="color:#8A7000">${fmt(tR*(S.settings.reserveRate||0.2))}</div></div>
 </div>
-<div class="card"><div class="sec">月度趨勢</div>
+<div class="card"><div class="sec">月度趨勢 <span>Monthly Trend</span></div>
   <div style="display:flex;align-items:flex-end;gap:3px;height:80px">
     ${yrR.map((r,i)=>`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;background:var(--coral);opacity:.8;border-radius:3px 3px 0 0;height:${Math.round((r/maxY)*72)}px;min-height:${r>0?3:0}px"></div></div>`).join('')}
   </div>
@@ -1078,7 +1131,7 @@ ${byProd.length?`<div class="card"><div class="sec">產品排行</div>${byProd.m
 </div>
 <button class="btn bo" style="font-size:12px" data-a="exportAnnCSVText">📋 年報 CSV 文字</button>
 `:`
-<div class="card"><div class="sec">定價計算 Pricing</div>
+<div class="card"><div class="sec">定價計算 <span>Pricing Calculator</span></div>
   <div class="f"><label>選擇產品</label>
     <div style="display:flex;gap:6px">
       <select class="inp" style="flex:1" data-b="ptIdx">${S.prods.map((p,i)=>`<option value="${i}"${ptIdx==i?' selected':''}>${esc(p.name)} Lv${p.level||1}</option>`).join('')}</select>
@@ -1118,6 +1171,24 @@ function renderModals(){
   if(S.modals.stocktake)h+=stocktakeModal();
   if(S.modals.repTxt)h+=repTxtModal();
   if(S.modals.produce)h+=produceModal();
+  // 照片放大 overlay
+  if(S.modals.viewPhoto){
+    const src=S.photos[S.modals.viewPhoto]||'';
+    const item=S.invItems.find(i=>i.id===S.modals.viewPhoto);
+    h+=`<div class="photo-overlay" data-a="closeM" data-m="viewPhoto">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:12px;width:100%">
+        <img src="${src}" alt="" style="max-width:100%;max-height:75vh;border-radius:14px;object-fit:contain">
+        <div style="display:flex;gap:8px">
+          <span style="color:white;font-size:13px;font-weight:700">${esc(item?.name||'')}</span>
+        </div>
+        <div style="display:flex;gap:8px">
+          <label style="padding:10px 18px;background:white;color:#333;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer">🔄 換照片<input type="file" accept="image/*" style="display:none" data-a="uploadPhoto" data-id="${S.modals.viewPhoto}"></label>
+          <button style="padding:10px 18px;background:var(--coral);color:white;border:none;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer" data-a="delPhoto" data-id="${S.modals.viewPhoto}">🗑 刪除</button>
+          <button style="padding:10px 18px;background:rgba(255,255,255,0.2);color:white;border:none;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer" data-a="closeM" data-m="viewPhoto">關閉</button>
+        </div>
+      </div>
+    </div>`;
+  }
   return h;
 }
 
@@ -1309,7 +1380,7 @@ ${MH('系統設定 Settings')}
             <input class="list-inp" value="${esc(sp.name)}" data-b="prodSpec.${si}.name" placeholder="規格名稱" style="font-weight:700;flex:1">
             <button class="tbtn tbtn-red" data-a="delProdSpec" data-idx="${si}">${TRASH}</button>
           </div>
-          <div style="font-size:10px;color:var(--muted);margin-bottom:4px">主要液體</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px">主要原料</div>
           <div style="display:flex;gap:6px;margin-bottom:6px">
             <select class="list-inp" data-b="prodSpec.${si}.baseItem" style="flex:2;font-size:11px">
               <option value="">— 選擇 —</option>
@@ -1560,7 +1631,7 @@ ${MH('快速盤點 Stocktake','直接輸入現有數量')}
 </div></div></div>`;}
 
 function repTxtModal(){return`<div class="overlay" data-a="closeM" data-m="repTxt"><div class="modal" onclick="event.stopPropagation()">
-${MH('報表文字','複製後貼到 Notion / Line')}
+${MH('報表文字 Report Text','複製後貼到 Notion / Line')}
 <div class="mb">
   <textarea readonly style="width:100%;padding:14px;background:var(--bg);border:2px solid var(--bd);border-radius:10px;font-size:12px;font-family:monospace;color:var(--ink);line-height:1.75;resize:vertical;min-height:280px;box-sizing:border-box">${esc(S.forms.repTxt||'')}</textarea>
   <button class="btn bc" style="margin-top:10px" data-a="copyRepTxt">複製 Copy ✓</button>
@@ -1575,7 +1646,15 @@ function bindAll(){
     el.addEventListener('change',()=>bind(el.dataset.b,el.value));
   });
   document.querySelectorAll('[data-a]').forEach(el=>{
-    if(el.tagName==='INPUT'&&el.type==='file'){el.addEventListener('change',()=>{if(el.files[0])importJSON(el.files[0]);});return;}
+    if(el.tagName==='INPUT'&&el.type==='file'){
+      el.addEventListener('change',()=>{
+        if(el.files[0]){
+          if(el.dataset.a==='importJSON')importJSON(el.files[0]);
+          else if(el.dataset.a==='uploadPhoto')handlePhotoUpload(el.dataset.id,el.files[0]);
+        }
+      });
+      return;
+    }
     el.addEventListener('click',e=>{e.stopPropagation();act(el.dataset.a,el.dataset);});
   });
   initDrag();
@@ -1634,6 +1713,13 @@ async function act(a,d){
   if(a==='openBackup'){S.modals.backup=true;re();}
   else if(a==='openSettings'){S.modals.settings=true;re();}
   else if(a==='closeM'){delete S.modals[d.m];if(d.m==='stocktake')S.forms.stkPending={};re();}
+  else if(a==='viewPhoto'){S.modals.viewPhoto=d.id;re();}
+  else if(a==='delPhoto'){
+    await delPhoto(d.id);
+    delete S.photos[d.id];
+    delete S.modals.viewPhoto;
+    showToast('✓ 已刪除照片');re();
+  }
   else if(a==='setSalV'){S.forms.salV=d.v;re();}
   else if(a==='setConsignSaleStore'){S.forms.salConsignStore=d.v;S.forms.salC={date:toDay(),prodIdx:0,qty:1};re();}
   else if(a==='setInvV'){S.forms.invV=d.v;re();}
@@ -1688,7 +1774,7 @@ async function act(a,d){
   else if(a==='delExp')       await delRec('exps','e_',d.id,'exps');
   else if(a==='delCustom')    {S.customOrders=(S.customOrders||[]).filter(o=>o.id!==d.id);await saveA('customOrders',S.customOrders);delete S.confirms['co_'+d.id];re();}
   else if(a==='delInvTx')     {const tx=S.invTx.find(t=>t.id===d.id);if(tx&&tx.type==='produce'){await undoProduce(tx);}else if(tx&&tx.type==='send'&&tx.store){if(S.invConsign[tx.store]&&S.invConsign[tx.store][tx.itemName]){S.invConsign[tx.store][tx.itemName]=Math.max(0,(S.invConsign[tx.store][tx.itemName]||0)-tx.qty);await saveO('inv_consign',S.invConsign);}await restoreFinishedStock(tx.itemName,tx.qty);}S.invTx=S.invTx.filter(t=>t.id!==d.id);await saveA('inv_tx',S.invTx);delete S.confirms['tx_'+d.id];re();}
-  else if(a==='delItem')      {S.invItems=S.invItems.filter(i=>i.id!==d.id);await saveA('inv_items',S.invItems);re();}
+  else if(a==='delItem')      {S.invItems=S.invItems.filter(i=>i.id!==d.id);if(S.photos[d.id]){await delPhoto(d.id);delete S.photos[d.id];}await saveA('inv_items',S.invItems);re();}
   else if(a==='delItemDirect'){if(confirm('確定刪除？'))await act('delItem',d);}
   else if(a==='delItemFromStocktake'){S.invItems=S.invItems.filter(i=>i.id!==d.id);if(S.forms.stkPending)delete S.forms.stkPending[d.id];delete S.confirms['stk_'+d.id];await saveA('inv_items',S.invItems);showToast('✓ 已刪除');re();}
   else if(a==='toggleExpCat'){S.forms.expandedCat=S.forms.expandedCat===d.cat?null:d.cat;re();}
@@ -2349,6 +2435,11 @@ async function init(){
   if(customOrders)S.customOrders=customOrders;
   if(consignSettlements)S.consignSettlements=consignSettlements;
   S.forms={salOpen:true,salCOpen:true,expOpen:true,invTxOpen:true,customOpen:true};
+  // 載入所有品項照片
+  await Promise.all(S.invItems.map(async item=>{
+    const p=await loadPhoto(item.id);
+    if(p)S.photos[item.id]=p;
+  }));
   render();
 }
 init();
